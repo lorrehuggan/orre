@@ -195,14 +195,9 @@ impl DeleteNameDialog {
             Some(summary) => {
                 let shown =
                     text::plain(summary.alias.definition().name().as_str(), text::NAME_SHOWN);
-                let rows = text::count(summary.matches, "transaction", "transactions");
                 (
                     format!("Delete the name “{shown}”?"),
-                    format!(
-                        "The {rows} that show it go back to the bank’s cleaned text, or to \
-                         another name that matches. Names you typed on a transaction stay. You \
-                         can add the name again."
-                    ),
+                    delete_name_words(summary.matches),
                 )
             }
             None => ("Delete the name?".to_owned(), String::new()),
@@ -234,6 +229,21 @@ impl DeleteNameDialog {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(DialogClosed);
     }
+}
+
+/// The delete-name body: what happens to the transactions that show it.
+fn delete_name_words(matches: usize) -> String {
+    let lead = match matches {
+        0 => "No transactions show it, so nothing changes.".to_owned(),
+        1 => "The transaction that shows it goes back to the bank’s cleaned text, or to another \
+              name that matches."
+            .to_owned(),
+        n => format!(
+            "The {n} transactions that show it go back to the bank’s cleaned text, or to \
+             another name that matches."
+        ),
+    };
+    format!("{lead} Names you typed on a transaction stay. You can add the name again.")
 }
 
 impl Render for DeleteNameDialog {
@@ -555,6 +565,29 @@ mod tests {
             changed_since: transactions - restored_on,
             transactions: restored_on,
         }
+    }
+
+    #[test]
+    fn the_delete_name_dialog_counts_in_the_singular_and_plural() {
+        let tail = " Names you typed on a transaction stay. You can add the name again.";
+        assert_eq!(
+            delete_name_words(0),
+            format!("No transactions show it, so nothing changes.{tail}")
+        );
+        assert_eq!(
+            delete_name_words(1),
+            format!(
+                "The transaction that shows it goes back to the bank’s cleaned text, or to \
+                 another name that matches.{tail}"
+            )
+        );
+        assert_eq!(
+            delete_name_words(3),
+            format!(
+                "The 3 transactions that show it go back to the bank’s cleaned text, or to \
+                 another name that matches.{tail}"
+            )
+        );
     }
 
     #[test]
