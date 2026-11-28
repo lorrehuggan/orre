@@ -115,6 +115,9 @@ pub struct RestoreTarget {
     pub taken_at: Option<DateTime<Utc>>,
     /// That time, local.
     pub local: Option<chrono::NaiveDateTime>,
+    /// Chosen with "Restore from a file…": the dialog offers "Choose
+    /// another file…" (SLI-71).
+    pub from_file: bool,
 }
 
 /// The backup the Delete backup dialog would delete (R.12).
@@ -172,8 +175,10 @@ pub enum NoticeMessage {
     Copied { file: String },
     /// After a backup was deleted: the space it freed.
     Deleted { size: u64 },
-    /// After a restore.
+    /// After a restore: when the backup was taken ("28 Nov, 11:40"), when
+    /// known.
     Restored {
+        from: Option<String>,
         migrated: bool,
         log_kept: Option<usize>,
     },
@@ -941,6 +946,7 @@ impl SettingsView {
             path: row.backup.path.clone(),
             taken_at: Some(row.backup.taken_at),
             local: Some(row.local),
+            from_file: false,
         }));
     }
 
@@ -964,17 +970,8 @@ impl SettingsView {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let named = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(orre_core::backup::parse_file_name)
-                .map(|(_, taken_at)| taken_at);
             let _ = this.update(cx, |_, cx| {
-                cx.emit(SettingsEvent::RestoreRequested(RestoreTarget {
-                    path,
-                    taken_at: named,
-                    local: named.map(store::local),
-                }))
+                cx.emit(SettingsEvent::RestoreRequested(RestoreTarget::chosen(path)))
             });
         }));
     }
@@ -1127,11 +1124,19 @@ impl SettingsView {
         cx.emit(SettingsEvent::RestoreFailed);
     }
 
-    /// After a restore (the Restore dialog): reads everything again, says
-    /// so, and tells the shell.
-    pub fn restored(&mut self, restored: &orre_core::backup::Restored, cx: &mut Context<Self>) {
+    /// After a restore (the Restore dialog) of the backup taken at
+    /// `taken` (local), when known: reads everything again, says so, and
+    /// tells the shell.
+    pub fn restored(
+        &mut self,
+        restored: &orre_core::backup::Restored,
+        taken: Option<chrono::NaiveDateTime>,
+        cx: &mut Context<Self>,
+    ) {
+        let today = self.clock().today;
         self.notice = Some(Notice {
             message: NoticeMessage::Restored {
+                from: taken.map(|local| restore::refusal::when(local, today)),
                 migrated: restored.migrated_to.is_some(),
                 log_kept: restored.log_rows_carried,
             },

@@ -5,7 +5,7 @@
 //!
 //! `float`, 1px `border`, `radius-lg`, the Toolbar shadow; 8px block, 12px
 //! start and 8px end padding, 12px gaps. A 14px `check`, the message in
-//! body type, an optional outline action ("Undo", "Show in folder") and a
+//! body type, optional outline actions ("Undo", "Show in folder") and a
 //! 24px dismiss icon button. It stays until dismissed or replaced.
 //!
 //! Composed for M3.16 (not drawn): a failure uses the same bar with the
@@ -30,7 +30,7 @@ type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub struct NotificationBar {
     message: AnyElement,
     failed: bool,
-    action: Option<Button>,
+    actions: Vec<Button>,
     on_dismiss: Option<ClickHandler>,
 }
 
@@ -41,7 +41,7 @@ impl NotificationBar {
         Self {
             message: message.into_any_element(),
             failed: false,
-            action: None,
+            actions: Vec::new(),
             on_dismiss: None,
         }
     }
@@ -53,9 +53,10 @@ impl NotificationBar {
         self
     }
 
-    /// Adds an outline action after the message.
+    /// Adds an outline action after the message, after those already
+    /// there.
     pub fn action(mut self, button: Button) -> Self {
-        self.action = Some(button);
+        self.actions.push(button);
         self
     }
 
@@ -110,7 +111,7 @@ impl RenderOnce for NotificationBar {
                     })
                     .child(self.message),
             )
-            .children(self.action)
+            .children(self.actions)
             .child(dismiss)
     }
 }

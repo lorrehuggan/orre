@@ -112,7 +112,12 @@ supersedes "local backups", point 3.
   restored, then migrated by `Database::open`; a newer one is refused. `backup::check`
   runs the checks alone (`orre restore` without `--yes`), and the app's dialog shows
   them as "intact" and "this version can read it" (`backup::detail::assess`), restoring
-  only when both pass and the current database is readable (built, point 6).
+  only when both pass and the current database is readable (built, point 6). A third
+  row, "AI access can be switched off", can only fail once Restore is pressed
+  (`Error::AiAccessNotOff`, below). Each refusal fails its own row, with a body and,
+  where there is more than the row says, a "Details" block built from the error's
+  typed fields, never its SQL or the file's path (SLI-71,
+  `settings::restore::refusal`).
 - **Never without a safety backup.** The current database is backed up (`restore`)
   first; if it can't be, or another connection holds it, nothing is restored. Its
   `-wal`/`-shm` are checkpointed and removed before the rename.
@@ -417,9 +422,12 @@ a client the user had revoked, or a kill switch turned off, came back on. Adds t
 5. **Pre-V11 backups** have no `mcp_client` or `setting` table, so there's nothing to
    switch off. Migrating creates both empty: no clients, and the kill switch unset (so
    it reads on).
-6. **The user is told.** The Restore dialog and `orre restore --yes` both say
+6. **The user is told.** `orre restore --yes` says
    `settings::restore::AI_OFF_AFTER_RESTORE`: "AI clients are switched off after a
-   restore; turn them back on in Settings."
+   restore; turn them back on in Settings." Since SLI-71 the Restore dialog says
+   `settings::restore::refusal::AI_OFF_PARAGRAPH` instead ("Every AI client is switched
+   off after a restore. Turn each one back on under AI clients."), and the notification
+   after a restore ends "· AI clients are off" with an "AI clients" button.
 7. **Deferred.** Carrying the current database's per-client state forward (keeping
    clients the user still has on enabled at their current level) is a follow-up. A
    restore also rolls back the other settings; that is out of scope here (SLI-41).
@@ -479,7 +487,8 @@ of "Decision record: a restore switches AI access off" had read back as done.
    message names the first by type and name (capped, quoted, never its SQL). It runs on
    the staged copy before the lock and the rename, so nothing is restored and the
    current database is unchanged. `backup::check` refuses the same way; the app's
-   dialog shows the message and doesn't offer the restore.
+   dialog fails its second row ("It isn't laid out like an Orre backup · different
+   layout"), names the object under "Details" and doesn't offer the restore (SLI-71).
 4. **Tested** through `restore` with backups given an extra trigger, view, table or
    index, a missing trigger and a changed one, a changed virtual table, a missing or
    shadow-like extra table, a virtual table by a shadow's name, a shadow table with its

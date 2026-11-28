@@ -14,7 +14,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags};
 
-use super::{Backup, Error, KEEP_RECENT, Reason, RestoreCheck};
+use super::{Backup, Error, KEEP_RECENT, Reason, RestoreCheck, SchemaProblem};
 use crate::clock;
 use crate::db::{self, Database, SchemaVersion};
 
@@ -424,14 +424,20 @@ pub fn save_copy(db_path: &Path, from: &Path, to: &Path) -> Result<(), Error> {
 
 /// What the restore checks found, check by check: the file is intact
 /// (SQLite's integrity check), then this version of Orre can read it
-/// (Orre's migration history, a schema no newer than this build's).
+/// (Orre's migration history, a schema no newer than this build's and laid
+/// out as the migrations make it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Assessment {
     /// Both passed: it can be restored.
     Ready(RestoreCheck),
-    /// The file isn't a SQLite database, or fails the integrity check. The
+    /// The file isn't a SQLite database ([`Error::NotADatabase`]). The
     /// second check didn't run.
-    Damaged { problem: String },
+    NotADatabase,
+    /// A SQLite database that fails the integrity check
+    /// ([`Error::Integrity`]): how many problems, and SQLite's message for
+    /// the first, which can name objects in the file. The second check
+    /// didn't run.
+    Integrity { count: usize, first: String },
     /// Intact, but not an Orre database.
     NotOrre,
     /// Intact, but from a newer Orre.
@@ -441,11 +447,50 @@ pub enum Assessment {
     },
     /// Intact, but its migrations differ from this build's.
     OtherHistory,
+    /// Intact, but its schema isn't what the migrations create at its
+    /// version ([`Error::Schema`]): the first object that differs, its type
+    /// and name capped as there; never its SQL.
+    Schema {
+        version: SchemaVersion,
+        problem: SchemaProblem,
+        object_type: String,
+        name: String,
+    },
 }
 
 impl Assessment {
     pub fn is_ready(&self) -> bool {
         matches!(self, Assessment::Ready(_))
+    }
+
+    /// `error` as the check it fails, when it is one: what [`assess`]
+    /// makes of [`super::check`]'s errors, and of [`super::restore`]'s
+    /// when the file changed after it was checked. Any other error is
+    /// returned as it is.
+    pub fn of_failed_check(error: Error) -> Result<Self, Error> {
+        match error {
+            Error::NotADatabase { .. } => Ok(Assessment::NotADatabase),
+            Error::Integrity { count, first, .. } => Ok(Assessment::Integrity { count, first }),
+            Error::NotOrre { .. } => Ok(Assessment::NotOrre),
+            Error::Incompatible {
+                source: db::Error::SchemaTooNew { found, supported },
+                ..
+            } => Ok(Assessment::TooNew { found, supported }),
+            Error::Incompatible { .. } => Ok(Assessment::OtherHistory),
+            Error::Schema {
+                version,
+                problem,
+                object_type,
+                name,
+                ..
+            } => Ok(Assessment::Schema {
+                version,
+                problem,
+                object_type,
+                name,
+            }),
+            other => Err(other),
+        }
     }
 }
 
@@ -455,22 +500,7 @@ impl Assessment {
 pub fn assess(db_path: &Path, backup: &Path) -> Result<Assessment, Error> {
     match super::check(db_path, backup) {
         Ok(check) => Ok(Assessment::Ready(check)),
-        Err(Error::NotADatabase { .. }) => Ok(Assessment::Damaged {
-            problem: "it isn't a database".to_owned(),
-        }),
-        Err(Error::Integrity { count, first, .. }) => Ok(Assessment::Damaged {
-            problem: format!(
-                "{count} {}; the first: {first}",
-                if count == 1 { "problem" } else { "problems" }
-            ),
-        }),
-        Err(Error::NotOrre { .. }) => Ok(Assessment::NotOrre),
-        Err(Error::Incompatible {
-            source: db::Error::SchemaTooNew { found, supported },
-            ..
-        }) => Ok(Assessment::TooNew { found, supported }),
-        Err(Error::Incompatible { .. }) => Ok(Assessment::OtherHistory),
-        Err(other) => Err(other),
+        Err(error) => Assessment::of_failed_check(error),
     }
 }
 
@@ -1073,10 +1103,42 @@ mod tests {
 
         let junk = dir.path().join("junk.db");
         fs::write(&junk, b"not a database at all, just some bytes......").unwrap();
-        assert!(matches!(
-            assess(&db_path, &junk).unwrap(),
-            Assessment::Damaged { .. }
-        ));
+        assert_eq!(assess(&db_path, &junk).unwrap(), Assessment::NotADatabase);
+
+        // A real SQLite file with a page overwritten: damaged, not "not a
+        // database".
+        let corrupt = dir.path().join("corrupt.db");
+        fs::copy(&good.path, &corrupt).unwrap();
+        corrupt_pages(&corrupt);
+        assert!(
+            matches!(
+                assess(&db_path, &corrupt).unwrap(),
+                Assessment::Integrity { count, .. } if count >= 1
+            ),
+            "{:?}",
+            assess(&db_path, &corrupt)
+        );
+
+        // A trigger the migrations don't create: named, typed, no SQL.
+        let extra = dir.path().join("extra.db");
+        fs::copy(&good.path, &extra).unwrap();
+        Connection::open(&extra)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER qa_evil AFTER INSERT ON account \
+                 BEGIN UPDATE mcp_client SET enabled = 1; END;",
+            )
+            .unwrap();
+        let version = Database::supported_schema_version();
+        assert_eq!(
+            assess(&db_path, &extra).unwrap(),
+            Assessment::Schema {
+                version,
+                problem: SchemaProblem::Extra,
+                object_type: "trigger".to_owned(),
+                name: "qa_evil".to_owned(),
+            }
+        );
 
         let empty = dir.path().join("empty.db");
         Connection::open(&empty)
@@ -1086,5 +1148,20 @@ mod tests {
         assert_eq!(assess(&db_path, &empty).unwrap(), Assessment::NotOrre);
 
         assert!(assess(&db_path, &dir.path().join("missing.db")).is_err());
+    }
+
+    /// Overwrites every page after the first (the schema's) of the SQLite
+    /// file at `path` past its 8-byte header, so the file still opens but
+    /// fails the integrity check.
+    fn corrupt_pages(path: &Path) {
+        let mut bytes = fs::read(path).unwrap();
+        let page = u16::from_be_bytes([bytes[16], bytes[17]]) as usize;
+        let len = bytes.len();
+        for start in (page..len).step_by(page) {
+            for byte in &mut bytes[start + 8..(start + page).min(len)] {
+                *byte = 0xA5;
+            }
+        }
+        fs::write(path, bytes).unwrap();
     }
 }

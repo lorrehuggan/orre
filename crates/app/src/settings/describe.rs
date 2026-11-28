@@ -538,10 +538,15 @@ impl SettingsView {
                     NoticeText::Plain(text) => text,
                 },
                 failed: matches!(notice.message, super::NoticeMessage::Failed(_)),
-                actions: notice
-                    .reveal
-                    .iter()
-                    .map(|_| Action::button("Show in folder", true))
+                actions: matches!(notice.message, super::NoticeMessage::Restored { .. })
+                    .then(|| Action::button(super::clients::TITLE, true))
+                    .into_iter()
+                    .chain(
+                        notice
+                            .reveal
+                            .iter()
+                            .map(|_| Action::button("Show in folder", true)),
+                    )
                     .collect(),
             }),
             dialog: None,
