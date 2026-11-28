@@ -618,6 +618,42 @@ mod tests {
     }
 
     #[test]
+    fn only_real_calendar_dates_and_times_are_logged_in_the_clear() {
+        let logged = |text: &str| redact(json!({ "from": text }), tool_schema());
+        for kept in [
+            "2000-02-29",
+            "2024-02-29",
+            "0400-02-29",
+            "2026-11-13T12:04:31Z",
+            "2026-11-13T12:04:31+05:30",
+        ] {
+            assert_eq!(logged(kept), format!(r#"{{"from":"{kept}"}}"#));
+        }
+        for redacted in [
+            // Not leap years: centuries are, only every 400 years.
+            "1900-02-29",
+            "2100-02-29",
+            "0100-02-29",
+            "0300-02-29",
+            // A day after a month that isn't one, or after the wrong separator.
+            "2026-13-05",
+            "2026-11x05",
+            // An offset with a bad hour or separator.
+            "2026-11-13T12:04:31+24:00",
+            "2026-11-13T12:04:31+05x30",
+        ] {
+            assert_eq!(
+                logged(redacted),
+                format!(
+                    r#"{{"from":{{"length":{},"type":"string"}}}}"#,
+                    redacted.len()
+                ),
+                "{redacted}"
+            );
+        }
+    }
+
+    #[test]
     fn purpose_is_cleaned_of_invisible_characters() {
         let args = object(json!({
             "purpose": "  \u{202E}monthly\u{200B} review\u{2066}\u{E0041}\n ",
