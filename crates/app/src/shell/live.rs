@@ -29,7 +29,8 @@
 //! - **The app's own restore** pauses the checks (the restored file would
 //!   report every topic); when it's done, every topic is refreshed, which
 //!   also takes the restored file's identity, and the checks resume when
-//!   that round's rebase has finished. A failed restore resumes at once.
+//!   that round's rebase has finished. What had arrived (LU.5) is dropped
+//!   with the file it came from. A failed restore resumes at once.
 //!
 //! Errors from a check or a rebase are logged at debug, once per run of
 //! failures, and never with the database's contents: the next tick tries
@@ -458,11 +459,15 @@ impl ShellView {
     }
 
     /// The app's own restore is done: every topic is refreshed, and the
-    /// checks resume when that round's rebase has finished.
+    /// checks resume when that round's rebase has finished. What had
+    /// arrived is dropped: the restored file replaced the rows it named,
+    /// and the refresh is the app's own, so it would never clear them.
     pub(super) fn restored(&mut self, cx: &mut Context<Self>) {
         if let Some(live) = self.live.as_mut() {
             live.resume_with_next_round = true;
         }
+        self.arrived.arrivals = Arrivals::new();
+        self.sync_arrivals(cx);
         self.refresh(Topic::ALL.into_iter().collect(), cx);
     }
 

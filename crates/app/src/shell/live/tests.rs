@@ -1300,3 +1300,79 @@ fn an_outside_read_overlapping_an_own_undo_notes_no_removal(cx: &mut TestAppCont
     assert!(cx.update(|_, cx| transactions.read(cx).removed_note().is_none()));
     assert_ne!(line(&shell, cx).as_deref(), Some("1 transaction removed"));
 }
+
+/// Restores `backup` as the app's Settings does, and lets every view read
+/// the restored data.
+fn restore(
+    shell: &Entity<ShellView>,
+    store: &SettingsStore,
+    backup: &std::path::Path,
+    cx: &mut VisualTestContext,
+) {
+    let settings = cx.update(|_, cx| shell.read(cx).settings().clone());
+    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restoring(cx)));
+    settle(cx);
+    let restored = store.restore(backup).unwrap();
+    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restored(&restored, cx)));
+    settle(cx);
+}
+
+/// A suggestion filed after the backup, still unseen (the Inbox not shown):
+/// the restore takes it away, and the line, the badge's unseen fill and
+/// the mark go with it (SLI-62).
+#[gpui_kit::test]
+fn a_restore_clears_a_suggestion_line_it_took_away(cx: &mut TestAppContext) {
+    let scratch = Scratch::seeded();
+    let (shell, cx) = open(cx, &scratch, View::Transactions);
+    // The Inbox shows its pending list, so the new row's id is known.
+    show(&shell, View::Inbox, cx);
+    show(&shell, View::Transactions, cx);
+    let badge = cx.update(|_, cx| shell.read(cx).inbox().read(cx).badge());
+    let store = SettingsStore::new(scratch.path.clone());
+    let (backup, _) = store.back_up().unwrap();
+
+    let filed = scratch.file_outside("AFTERTHEBACKUP");
+    check(&shell, cx);
+    assert_eq!(
+        line(&shell, cx).as_deref(),
+        Some("1 suggestion from claude-code")
+    );
+    assert!(badge_unseen(&shell, cx));
+    assert_eq!(marked_suggestions(&shell, cx), BTreeSet::from([filed]));
+
+    restore(&shell, &store, &backup.path, cx);
+    assert!(!listed(&shell, filed, cx));
+    assert_eq!(
+        cx.update(|_, cx| shell.read(cx).inbox().read(cx).badge()),
+        badge,
+        "the badge counts the restored store"
+    );
+    assert_eq!(
+        line(&shell, cx),
+        None,
+        "no line for a suggestion that's gone"
+    );
+    assert!(!badge_unseen(&shell, cx));
+    assert!(marked_suggestions(&shell, cx).is_empty());
+}
+
+/// The same for a transaction added after the backup: its line and mark go
+/// with it.
+#[gpui_kit::test]
+fn a_restore_clears_a_ledger_line_it_took_away(cx: &mut TestAppContext) {
+    let scratch = Scratch::seeded();
+    let (shell, cx) = open(cx, &scratch, View::Inbox);
+    let before = rows(&shell, cx);
+    let store = SettingsStore::new(scratch.path.clone());
+    let (backup, _) = store.back_up().unwrap();
+
+    let added = add_row_outside(&scratch, &shell, cx);
+    check(&shell, cx);
+    assert_eq!(line(&shell, cx).as_deref(), Some("1 new transaction"));
+    assert_eq!(marked_rows(&shell, cx), BTreeSet::from([added]));
+
+    restore(&shell, &store, &backup.path, cx);
+    assert_eq!(rows(&shell, cx), before);
+    assert_eq!(line(&shell, cx), None, "no line for a row that's gone");
+    assert!(marked_rows(&shell, cx).is_empty());
+}
