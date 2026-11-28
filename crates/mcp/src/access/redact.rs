@@ -654,6 +654,40 @@ mod tests {
     }
 
     #[test]
+    fn a_schema_nested_too_deep_is_not_followed() {
+        let allowed = json!({ "const": "income", "type": "string" });
+        let through_any_of = |layers: usize| {
+            let mut schema = allowed.clone();
+            for _ in 0..layers {
+                schema = json!({ "anyOf": [schema] });
+            }
+            json!({ "properties": { "kind": schema } })
+        };
+        let through_refs = |layers: usize| {
+            let mut defs = JsonObject::new();
+            for index in 0..layers {
+                defs.insert(
+                    format!("D{index}"),
+                    json!({ "$ref": format!("#/$defs/D{}", index + 1) }),
+                );
+            }
+            defs.insert(format!("D{layers}"), allowed.clone());
+            json!({
+                "$defs": defs,
+                "properties": { "kind": { "$ref": "#/$defs/D0" } }
+            })
+        };
+        let args = || json!({ "kind": "income" });
+        let kept = r#"{"kind":"income"}"#;
+        let redacted = r#"{"kind":{"length":6,"type":"string"}}"#;
+
+        assert_eq!(redact(args(), through_any_of(3)), kept);
+        assert_eq!(redact(args(), through_refs(3)), kept);
+        assert_eq!(redact(args(), through_any_of(40)), redacted);
+        assert_eq!(redact(args(), through_refs(40)), redacted);
+    }
+
+    #[test]
     fn purpose_is_cleaned_of_invisible_characters() {
         let args = object(json!({
             "purpose": "  \u{202E}monthly\u{200B} review\u{2066}\u{E0041}\n ",
