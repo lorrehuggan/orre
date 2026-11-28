@@ -660,6 +660,17 @@ mod tests {
     }
 
     #[test]
+    fn a_file_where_the_data_directory_goes_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let data = dir.path().join("data");
+        std::fs::write(&data, b"not a directory").unwrap();
+
+        let err = create_private_dir(&data).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&data).unwrap(), b"not a directory");
+    }
+
+    #[test]
     fn connection_settings() {
         let dir = TempDir::new().unwrap();
         let db = Database::open(&db_path(&dir)).unwrap();
