@@ -1339,3 +1339,93 @@ fn an_unasked_reload_keeps_the_section_and_an_unsaved_category_name(cx: &mut Tes
     assert_eq!(name.as_deref(), Some("Typed name"));
     assert_eq!(describe(&shell, cx).selected, before.selected);
 }
+
+// A plain click on the row already selected keeps it (SLI-70) -----------------
+
+#[gpui_kit::test]
+fn clicking_the_preselected_rule_keeps_it_selected(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let (shell, rules, cx) = open(cx, &scratch);
+    let first = cx
+        .update(|_, cx| rules.read(cx).selected_rule_id())
+        .expect("opening Rules selects the first rule");
+    let title = item(&describe(&shell, cx)).title.clone();
+
+    click(&format!("rule-{first}"), cx);
+    assert_eq!(
+        cx.update(|_, cx| rules.read(cx).selected_rule_id()),
+        Some(first)
+    );
+    let shown = describe(&shell, cx);
+    assert_eq!(shown.selected.as_deref(), Some(title.as_str()));
+    assert_eq!(item(&shown).title, title, "the inspector stays filled");
+}
+
+#[gpui_kit::test]
+fn clicking_the_preselected_name_keeps_it_selected(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let (shell, rules, cx) = open(cx, &scratch);
+    click("rules-section-names", cx);
+    let Some(NameSelection::Stored(first)) = cx.update(|_, cx| rules.read(cx).names.selection())
+    else {
+        panic!("opening Merchant names selects the first name");
+    };
+
+    click(&format!("name-{first}"), cx);
+    assert_eq!(
+        cx.update(|_, cx| rules.read(cx).names.selection()),
+        Some(NameSelection::Stored(first))
+    );
+    assert_eq!(
+        item(&describe(&shell, cx)).title,
+        "Amazon Marketplace",
+        "the inspector stays filled"
+    );
+}
+
+#[gpui_kit::test]
+fn clicking_the_preselected_change_keeps_it_selected(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let (shell, rules, cx) = open(cx, &scratch);
+    click("rules-section-history", cx);
+    let first = cx
+        .update(|_, cx| rules.read(cx).history.selected_id())
+        .expect("opening History selects the newest change");
+    let title = item(&describe(&shell, cx)).title.clone();
+
+    click(&format!("change-{first}"), cx);
+    assert_eq!(
+        cx.update(|_, cx| rules.read(cx).history.selected_id()),
+        Some(first)
+    );
+    assert_eq!(
+        item(&describe(&shell, cx)).title,
+        title,
+        "the inspector stays filled"
+    );
+}
+
+#[gpui_kit::test]
+fn clicking_the_preselected_category_keeps_it_selected(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    fixture::seed_categories(&mut scratch.db());
+    let (shell, rules, cx) = open(cx, &scratch);
+    click("rules-section-categories", cx);
+    let Some(CategorySelection::Stored(first)) =
+        cx.update(|_, cx| rules.read(cx).categories.selection())
+    else {
+        panic!("opening Categories selects the first category");
+    };
+    let title = item(&describe(&shell, cx)).title.clone();
+
+    click(&format!("category-{first}"), cx);
+    assert_eq!(
+        cx.update(|_, cx| rules.read(cx).categories.selection()),
+        Some(CategorySelection::Stored(first))
+    );
+    assert_eq!(
+        item(&describe(&shell, cx)).title,
+        title,
+        "the inspector stays filled"
+    );
+}

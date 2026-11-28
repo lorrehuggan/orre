@@ -382,11 +382,10 @@ impl Accounts {
         cx.notify();
     }
 
-    /// Selects `account`, or all accounts if it's selected already: what a
-    /// click on a panel row does.
+    /// What a click on a panel row does: selects `account`, and keeps it
+    /// selected if it's selected already (Escape goes back to all accounts).
     pub fn toggle(&mut self, account: AccountId, cx: &mut Context<Self>) {
-        let next = (self.selected != Some(account)).then_some(account);
-        self.select(next, cx);
+        self.select(Some(account), cx);
     }
 
     /// Moves the selection through the panel's accounts in panel order

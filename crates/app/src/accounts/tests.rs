@@ -257,12 +257,11 @@ fn the_panel_lists_the_database_and_a_click_shows_the_account(cx: &mut TestAppCo
     );
     assert!(shows("add-balance", cx), "drawn as described");
 
+    // A second click keeps it (SLI-70); Escape goes back to all accounts.
     click(&row(scratch.current), cx);
-    assert_eq!(
-        selected(&accounts, cx),
-        None,
-        "a second click: all accounts"
-    );
+    assert_eq!(selected(&accounts, cx), Some(scratch.current));
+    press(panel::CLEAR_KEY, cx);
+    assert_eq!(selected(&accounts, cx), None, "Escape: all accounts");
     let shown = describe(&shell, &accounts, cx);
     assert_eq!(shown.inspector, None);
     assert_eq!(selected_row(&shown), None);
@@ -1633,6 +1632,34 @@ fn a_new_account_is_selected_at_once_and_stays_selected_when_the_read_lands(
     assert_eq!(*events.borrow(), [AccountsEvent::Selected(Some(id))]);
     let shown = describe(&shell, &accounts, cx);
     assert_eq!(selected_row(&shown).map(|(name, _)| name), Some("Amex"));
+}
+
+#[gpui_kit::test]
+fn clicking_a_new_account_s_row_keeps_it_selected(cx: &mut TestAppContext) {
+    // SLI-70: the new account is selected at once, so the first click on
+    // its row must not clear the selection.
+    let scratch = Scratch::new();
+    let (shell, accounts, cx) = open(cx, &scratch);
+    let id = cx
+        .update(|_, cx| {
+            accounts.update(cx, |accounts, cx| {
+                let account = NewAccount::new("Amex", AccountKind::Current, Currency::GBP);
+                accounts.create(&account, None, cx)
+            })
+        })
+        .unwrap();
+    redraw(cx);
+    assert_eq!(selected(&accounts, cx), Some(id));
+
+    click(&format!("account-{id}"), cx);
+    assert_eq!(selected(&accounts, cx), Some(id), "still selected");
+    let shown = describe(&shell, &accounts, cx);
+    assert_eq!(selected_row(&shown).map(|(name, _)| name), Some("Amex"));
+    assert_eq!(
+        value(section(&shown, None), "Name"),
+        Some("Amex"),
+        "the inspector stays filled"
+    );
 }
 
 #[gpui_kit::test]

@@ -933,10 +933,10 @@ impl Rules {
         cx.notify();
     }
 
-    /// Selects `id`, or nothing if it's selected.
+    /// What a click on a rule's row does: selects `id`, and keeps it
+    /// selected if it's selected already (Escape clears the selection).
     pub fn toggle_rule(&mut self, id: RuleId, cx: &mut Context<Self>) {
-        let next = (self.selected_rule_id() != Some(id)).then_some(id);
-        self.select_rule(next, cx);
+        self.select_rule(Some(id), cx);
     }
 
     /// Moves the selection in the open section (↑↓, [`list::step`]).
@@ -1511,10 +1511,10 @@ impl Rules {
         cx.notify();
     }
 
+    /// What a click on a name's row does: selects `id`, and keeps it
+    /// selected if it's selected already (Escape clears the selection).
     pub fn toggle_name(&mut self, id: MerchantAliasId, cx: &mut Context<Self>) {
-        let stored = NameSelection::Stored(id);
-        let next = (self.names.selection() != Some(stored)).then_some(stored);
-        self.select_name(next, cx);
+        self.select_name(Some(NameSelection::Stored(id)), cx);
     }
 
     /// "+ New name".
@@ -1636,9 +1636,10 @@ impl Rules {
         cx.notify();
     }
 
+    /// What a click on a change's row does: selects `batch`, and keeps it
+    /// selected if it's selected already (Escape clears the selection).
     pub fn toggle_batch(&mut self, batch: ChangeBatchId, cx: &mut Context<Self>) {
-        let next = (self.history.selected_id() != Some(batch)).then_some(batch);
-        self.select_batch(next, cx);
+        self.select_batch(Some(batch), cx);
     }
 
     pub fn request_undo(&mut self, cx: &mut Context<Self>) {
@@ -1752,10 +1753,10 @@ impl Rules {
         cx.notify();
     }
 
+    /// What a click on a category's row does: selects `id`, and keeps it
+    /// selected if it's selected already (Escape clears the selection).
     pub fn toggle_category(&mut self, id: i64, cx: &mut Context<Self>) {
-        let stored = CategorySelection::Stored(id);
-        let next = (self.categories.selection() != Some(stored)).then_some(stored);
-        self.select_category(next, cx);
+        self.select_category(Some(CategorySelection::Stored(id)), cx);
     }
 
     /// "+ New category": the inspector's form, empty.
