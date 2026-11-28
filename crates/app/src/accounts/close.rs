@@ -94,7 +94,7 @@ impl CloseFacts {
                 value = amount(value),
             ),
             (AccountKind::Liability, Some(owed)) if !owed.is_zero() => format!(
-                "{name} leaves the Accounts panel and counts as {zero} from {day}, so net worth rises by {owed} from then. Its balances stay, so earlier net worth doesn't change. You can reopen it.",
+                "{name} leaves the Accounts panel and counts as {zero} from {day}, which raises net worth by {owed}. Its balances stay, so earlier net worth doesn't change. {REOPEN_LINE}",
                 zero = zero(owed),
                 owed = amount(owed),
             ),
@@ -102,23 +102,49 @@ impl CloseFacts {
                 "{name} leaves the Accounts panel and counts as nothing from {day}. Its values stay, so earlier net worth doesn't change. You can reopen it."
             ),
             (_, balance) => {
-                let mut body = format!(
-                    "{name} leaves the Accounts panel and net worth from {day}. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it."
-                );
+                let mut body =
+                    format!("{name} leaves the Accounts panel and net worth from {day}.");
                 if let Some(balance) = balance.filter(|balance| !balance.is_zero()) {
                     body.push_str(&format!(
-                        " Its balance, {}, leaves net worth with it.",
+                        " Its balance of {} goes with it.",
                         money(balance, Sign::Negative)
                     ));
                 }
                 match self.pots.as_slice() {
                     [] => {}
-                    [pot] => body.push_str(&format!(" Its pot, {pot}, closes with it.")),
-                    pots => body.push_str(&format!(" Its pots, {}, close with it.", list(pots))),
+                    [pot] => body.push_str(&format!(" Its pot, {pot}, closes too.")),
+                    pots => body.push_str(&format!(" Its pots, {}, close too.", list(pots))),
                 }
+                body.push_str(&format!(
+                    " Its transactions, balances and imports stay, so earlier net worth doesn't change. {REOPEN_LINE}"
+                ));
                 body
             }
         }
+    }
+}
+
+/// The command that reopens a closed account, as the body names it; the
+/// dialog sets it in Geist Mono ([`body_text`]).
+const REOPEN_COMMAND: &str = "orre accounts reopen";
+
+/// The bank and liability bodies' last sentence (SLI-77, Rowling). Plain
+/// text: `describe()` and tests carry the body as one string.
+const REOPEN_LINE: &str = "You can reopen it with orre accounts reopen.";
+
+/// The body as drawn: a caption in which [`REOPEN_COMMAND`] is set in
+/// Geist Mono, as Settings sets `orre mcp --client` in prose (Paper
+/// `CRE-0`). Any other body is plain.
+fn body_text(body: String) -> gpui_kit::Div {
+    use crate::settings::table::{mono, plain, rich};
+
+    match body.rsplit_once(REOPEN_COMMAND) {
+        Some((before, after)) => rich(
+            crate::theme::tokens::typography::CAPTION,
+            color::TEXT_MUTED,
+            vec![plain(before), mono(REOPEN_COMMAND), plain(after)],
+        ),
+        None => caption(body),
     }
 }
 
@@ -266,7 +292,7 @@ impl Render for CloseAccountDialog {
         let close = cx.listener(|this, _, window, cx| this.submit(window, cx));
         let on_cancel = cx.entity().downgrade();
         Dialog::new(title, &self.focus)
-            .body(caption(body))
+            .body(body_text(body))
             .body(
                 div()
                     .flex()
@@ -335,35 +361,75 @@ mod tests {
     fn a_bank_account_names_its_balance_and_pots() {
         let mut savings = facts(AccountKind::Current, 128_410, &["Holiday", "Rainy day"]);
         savings.name = "Current account".into();
-        // SLI-77: the bank sentence says "from" the close day itself, with
-        // its year even in the current year, as the liability's does.
+        // SLI-77 (Rowling): the day with its year, then the balance, then
+        // the pots, then what stays, then how to reopen it.
         assert_eq!(
             savings.body(Some(day(11, 29))),
-            "Current account leaves the Accounts panel and net worth from 29 Nov 2026. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it. Its balance, £1,284.10, leaves net worth with it. Its pots, Holiday and Rainy day, close with it."
+            "Current account leaves the Accounts panel and net worth from 29 Nov 2026. Its balance of £1,284.10 goes with it. Its pots, Holiday and Rainy day, close too. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
         );
         assert_eq!(savings.day_label(), "Closed on");
+        assert_eq!(list(&["A".into(), "B".into()]), "A and B");
         assert_eq!(list(&["A".into(), "B".into(), "C".into()]), "A, B and C");
         let mortgage = facts(AccountKind::Liability, -21_264_000, &[]);
         assert!(
             mortgage
                 .body(None)
-                .contains("from that day, so net worth rises by £212,640.00 from then")
+                .contains("counts as £0 from that day, which raises net worth by £212,640.00.")
         );
     }
 
+    /// SLI-77 (Rowling): every shape of the bank sentence, exactly.
+    #[test]
+    fn the_bank_body_in_each_shape() {
+        let bank = |minor: Option<i64>, pots: &[&str]| {
+            let mut facts = facts(AccountKind::Current, 0, pots);
+            facts.name = "Everyday account".into();
+            facts.balance = minor.map(|minor| Money::new(minor, Currency::GBP));
+            facts.body(Some(day(11, 29)))
+        };
+        // No balance, no pots.
+        assert_eq!(
+            bank(None, &[]),
+            "Everyday account leaves the Accounts panel and net worth from 29 Nov 2026. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
+        );
+        // A balance, no pots.
+        assert_eq!(
+            bank(Some(120_000), &[]),
+            "Everyday account leaves the Accounts panel and net worth from 29 Nov 2026. Its balance of £1,200.00 goes with it. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
+        );
+        // A balance and one pot.
+        assert_eq!(
+            bank(Some(120_000), &["Holiday"]),
+            "Everyday account leaves the Accounts panel and net worth from 29 Nov 2026. Its balance of £1,200.00 goes with it. Its pot, Holiday, closes too. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
+        );
+        // A balance and three pots.
+        assert_eq!(
+            bank(Some(120_000), &["Holiday", "Rainy day", "Car"]),
+            "Everyday account leaves the Accounts panel and net worth from 29 Nov 2026. Its balance of £1,200.00 goes with it. Its pots, Holiday, Rainy day and Car, close too. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
+        );
+        // Pots but a zero balance (and the same with no balance): no
+        // balance sentence.
+        let zero_with_pots = "Everyday account leaves the Accounts panel and net worth from 29 Nov 2026. Its pots, Holiday and Car, close too. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen.";
+        assert_eq!(bank(Some(0), &["Holiday", "Car"]), zero_with_pots);
+        assert_eq!(bank(None, &["Holiday", "Car"]), zero_with_pots);
+        // An overdrawn balance keeps its sign, as before.
+        assert!(bank(Some(-2_410), &[]).contains(" Its balance of −£24.10 goes with it. "));
+    }
+
     /// SLI-77: the liability sentence QA saw, with the year even in the
-    /// current year, and a day in another year.
+    /// current year, and a day in another year. The asset bodies keep
+    /// their wording (Rowling gave none for them).
     #[test]
     fn the_liability_body_has_the_year() {
         let mut loan = facts(AccountKind::Liability, -500_000, &[]);
         loan.name = "QA Loan".into();
         assert_eq!(
             loan.body(Some(day(11, 29))),
-            "QA Loan leaves the Accounts panel and counts as £0 from 29 Nov 2026, so net worth rises by £5,000.00 from then. Its balances stay, so earlier net worth doesn't change. You can reopen it."
+            "QA Loan leaves the Accounts panel and counts as £0 from 29 Nov 2026, which raises net worth by £5,000.00. Its balances stay, so earlier net worth doesn't change. You can reopen it with orre accounts reopen."
         );
         assert!(
             loan.body(NaiveDate::from_ymd_opt(2027, 1, 4))
-                .contains("counts as £0 from 4 Jan 2027, so")
+                .contains("counts as £0 from 4 Jan 2027, which")
         );
         let mut empty = facts(AccountKind::Asset, 0, &[]);
         empty.name = "Car".into();
@@ -371,5 +437,19 @@ mod tests {
             empty.body(Some(day(11, 29))),
             "Car leaves the Accounts panel and counts as nothing from 29 Nov 2026. Its values stay, so earlier net worth doesn't change. You can reopen it."
         );
+    }
+
+    /// The command in the body is found for the Geist Mono run, from the
+    /// end, so a name that holds it doesn't move the run.
+    #[test]
+    fn the_reopen_command_is_split_from_the_end() {
+        let mut odd = facts(AccountKind::Current, 0, &[]);
+        odd.name = "orre accounts reopen".into();
+        odd.balance = None;
+        let body = odd.body(Some(day(11, 29)));
+        let (before, after) = body.rsplit_once(REOPEN_COMMAND).unwrap();
+        assert!(before.starts_with("orre accounts reopen leaves"));
+        assert!(before.ends_with("You can reopen it with "));
+        assert_eq!(after, ".");
     }
 }
