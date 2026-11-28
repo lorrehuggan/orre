@@ -3,8 +3,8 @@
 //! multi-selection, floating over the table.
 
 use gpui_kit::{
-    AnyElement, App, ClickEvent, IntoElement, ParentElement as _, RenderOnce, SharedString,
-    Styled as _, Window, div,
+    AnyElement, App, ClickEvent, InteractiveElement as _, IntoElement, ParentElement as _,
+    RenderOnce, SharedString, Styled as _, Window, div,
 };
 
 use crate::theme::tokens::{color, radius, shadow, size, spacing, typography, weight};
@@ -96,6 +96,9 @@ impl RenderOnce for BulkActionBar {
             .border(size::HAIRLINE)
             .border_color(color::BORDER)
             .shadow(vec![shadow::TOOLBAR.box_shadow()])
+            // It floats over the rows: a click on it mustn't reach the row
+            // beneath too. The wheel still scrolls the table.
+            .block_mouse_except_scroll()
             .child(count)
             .child(rule())
             .children(self.actions)
