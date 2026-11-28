@@ -488,9 +488,56 @@ fn restore_refuses_a_file_that_isnt_a_backup() {
     std::fs::write(&notes, "not a database ".repeat(10)).unwrap();
     let before = std::fs::read(&scratch.db).unwrap();
 
-    let error = scratch.err(&["restore", notes.to_str().unwrap(), "--yes"]);
+    let expected = format!(
+        "can't restore {}: it isn't a SQLite database",
+        notes.display()
+    );
 
-    assert!(error.contains("isn't a SQLite database"), "{error}");
+    assert_eq!(scratch.err(&["restore", notes.to_str().unwrap()]), expected);
+    assert_eq!(
+        scratch.err(&["restore", notes.to_str().unwrap(), "--yes"]),
+        expected
+    );
+    assert_eq!(std::fs::read(&scratch.db).unwrap(), before);
+    assert!(scratch.backups().is_empty());
+}
+
+/// An empty SQLite database: one page, no tables, so no migration history.
+/// Built by hand, as SQLite writes it, since the app doesn't depend on
+/// rusqlite.
+fn empty_sqlite_database() -> Vec<u8> {
+    let mut page = vec![0u8; 4096];
+    page[..16].copy_from_slice(b"SQLite format 3\0");
+    // Page size 4096, file format 1/1, no reserved bytes, the fixed payload
+    // fractions, change counter 1.
+    page[16..28].copy_from_slice(&[0x10, 0x00, 1, 1, 0, 64, 32, 32, 0, 0, 0, 1]);
+    // One page in the file, valid for change counter 1.
+    page[28..32].copy_from_slice(&1u32.to_be_bytes());
+    page[92..96].copy_from_slice(&1u32.to_be_bytes());
+    page[96..100].copy_from_slice(&3_046_001u32.to_be_bytes());
+    // Page 1: an empty table b-tree leaf (`sqlite_schema`), its content
+    // area starting at the end of the page.
+    page[100] = 0x0d;
+    page[105..107].copy_from_slice(&0x1000u16.to_be_bytes());
+    page
+}
+
+#[test]
+fn restore_refuses_a_sqlite_file_that_isnt_orre() {
+    let scratch = Scratch::with_account();
+    let other = scratch._dir.path().join("other.db");
+    std::fs::write(&other, empty_sqlite_database()).unwrap();
+    let before = std::fs::read(&scratch.db).unwrap();
+    let expected = format!(
+        "can't restore {}: it isn't an Orre database (no migration history)",
+        other.display()
+    );
+
+    assert_eq!(scratch.err(&["restore", other.to_str().unwrap()]), expected);
+    assert_eq!(
+        scratch.err(&["restore", other.to_str().unwrap(), "--yes"]),
+        expected
+    );
     assert_eq!(std::fs::read(&scratch.db).unwrap(), before);
     assert!(scratch.backups().is_empty());
 }
