@@ -94,15 +94,16 @@ const SCHEMA_BODY: &str = "Orre only restores backups laid out the way it makes 
 const AI_BODY: &str = "Orre only restores a backup if it can switch AI clients off afterwards. \
      It can't do that here. Your data hasn't changed.";
 
-/// The longest object or file name shown, in characters of escaped output
-/// (core caps a schema name at 64 input characters; this doesn't rely on
-/// that).
+/// The longest object or file name shown, in characters of escaped output,
+/// before the "…" a cut one ends with (so 65 at most; core caps a schema
+/// name at 64 input characters; this doesn't rely on that).
 const NAME_CAP: usize = 64;
 /// The longest SQLite message the Details block shows, in characters of
-/// escaped output.
+/// escaped output, before a cut one's "…".
 const MESSAGE_CAP: usize = 160;
 /// The longest error the dialog's `danger` caption shows, in characters of
-/// escaped output.
+/// escaped output, before a cut one's "…" and the full stop [`sentence`]
+/// adds.
 const ERROR_CAP: usize = 300;
 /// The Details chevron's turn: closed points right, open points down.
 const CHEVRON_TURN: Duration = Duration::from_millis(120);
@@ -247,7 +248,8 @@ pub fn error_text(error: &dyn std::error::Error) -> SharedString {
 ///   expand or run them; with `quoted` (a name between `"…"`) so do `"`
 ///   and `\`;
 /// - the output stops before it would pass `cap` characters, never inside
-///   an escape, and ends with "…" then.
+///   an escape, and then ends with "…": a cut result is at most `cap + 1`
+///   characters, the "…" included.
 pub fn inert(text: &str, cap: usize, quoted: bool) -> String {
     let mut out = String::new();
     let mut length = 0;
@@ -280,6 +282,14 @@ fn hidden(c: char) -> bool {
     const PRINTABLE_BLANKS: [char; 2] = ['\u{2800}', '\u{FFFC}'];
     let syntax = matches!(c, '"' | '\'' | '\\');
     (!syntax && c.escape_debug().next() == Some('\\')) || PRINTABLE_BLANKS.contains(&c)
+}
+
+/// `text` as the copy button puts it on the clipboard: in single quotes,
+/// each `'` in it written `'\''` (POSIX), so pasted into a shell it is one
+/// literal word and prints back as `text` (David, SLI-71). The text is
+/// what Details shows, [`inert`] already; nothing else is escaped.
+pub fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// A chosen file's name as the title shows it ([`inert`], capped).
@@ -607,7 +617,7 @@ impl RestoreDialog {
 
     fn render_details(&self, text: String, cx: &mut Context<Self>) -> AnyElement {
         let open = self.refusal.details_open;
-        let copied = text.clone();
+        let copied = shell_quoted(&text);
         div()
             .flex()
             .flex_col()
@@ -758,14 +768,13 @@ impl RestoreDialog {
 mod tests {
     use super::*;
 
-    /// Every result fits its cap, then "…".
+    /// The real bound: `cap` characters, or `cap + 1` for a cut result,
+    /// its "…" included.
     fn assert_fits(text: &str, cap: usize) {
         let length = text.chars().count();
-        let ellipsis = text.ends_with('…');
-        assert!(
-            length <= cap + usize::from(ellipsis),
-            "{length} > {cap}: {text}"
-        );
+        let bound = if text.ends_with('…') { cap + 1 } else { cap };
+        assert!(length <= bound, "{length} > {bound}: {text}");
+        assert!(length <= cap + 1, "{length} > {cap} + 1: {text}");
     }
 
     #[test]
@@ -838,8 +847,8 @@ mod tests {
         assert_fits(&shown, NAME_CAP);
     }
 
-    /// The copy button copies what Details shows: `$` and `` ` `` can't
-    /// expand or run when it's pasted into a shell.
+    /// What Details shows escapes `$` and `` ` ``; the copy button copies
+    /// that text single-quoted ([`shell_quoted`], round-tripped below).
     #[test]
     fn shell_characters_are_inert_in_what_is_copied() {
         let first = "row 1 missing from index x$(touch /tmp/david_pwn)`id`".to_owned();
@@ -865,6 +874,38 @@ mod tests {
         assert!(
             text.contains("\"x\\$(id>/tmp/pwn)\\`id\\`;rm -rf ~\""),
             "{text}"
+        );
+    }
+
+    /// The copy, pasted into `/bin/sh`, prints back exactly what Details
+    /// shows and runs nothing: `$(…)`, a backtick, both quotes and a
+    /// backslash.
+    #[test]
+    fn the_copy_round_trips_through_a_shell() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let marker = dir.path().join("pwned");
+        let ticked = dir.path().join("ticked");
+        let first = format!(
+            "row 1 missing from index x$(touch {}) `touch {}` it's \"q\" back\\slash",
+            marker.display(),
+            ticked.display()
+        );
+        let shown = details(&Assessment::Integrity { count: 1, first }).unwrap();
+        let wrapped = shell_quoted(&shown);
+        assert!(
+            wrapped.starts_with('\'') && wrapped.ends_with('\''),
+            "{wrapped}"
+        );
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf %s {wrapped}"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), shown);
+        assert!(
+            !marker.exists() && !ticked.exists(),
+            "the shell ran something"
         );
     }
 
@@ -896,8 +937,12 @@ mod tests {
                 || body.ends_with("\\u{200d}"),
             "{shown}"
         );
+        // The caption adds a full stop after the "…" (`sentence`): cap + 2.
         let error = error_text(&std::io::Error::other("\u{202E}".repeat(300)));
-        assert_fits(&error, ERROR_CAP + 1);
+        assert!(
+            error.ends_with("….") && error.chars().count() <= ERROR_CAP + 2,
+            "{error}"
+        );
     }
 
     #[test]

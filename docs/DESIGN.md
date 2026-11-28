@@ -2221,9 +2221,9 @@ Claude Code connected at standard access, the November Monzo import, 1,312 trans
     restore that stopped part-way is mentioned, as `orre restore` does. After a
     restore, the notification bar says "Restored the backup from 28 Nov 2026, 16:35 · AI
     clients are off", with outline "AI clients" (Settings → AI clients) and ghost "Show
-    in folder" for the backup of what it replaced (SLI-71). Whether the backup was
-    updated to this version, and the newer access-log entries kept, show under "Since
-    this backup" on that backup, for the session. A caption says your own bank presets aren't in backups, so restoring
+    in folder" for the backup of what it replaced (SLI-71). "Upgraded · to this version
+    of Orre" and "Access log · kept 1,234 newer entries" show under "Since this backup"
+    on that backup instead, for the session. A caption says your own bank presets aren't in backups, so restoring
     doesn't change them, and an account whose preset isn't on this computer asks for its
     columns again at the next import (R.12).
   - *Retention, total and Delete* (R.12, composed 2026-11-19): the toolbar caption reads

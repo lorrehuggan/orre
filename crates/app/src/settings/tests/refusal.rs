@@ -309,6 +309,7 @@ fn details_name_the_object_but_never_its_sql_or_the_path(cx: &mut TestAppContext
         .and_then(|rest| rest.split_once("\" (compared"))
         .unwrap()
         .0;
+    // 64 characters, then "…": cap + 1, the ellipsis included.
     assert_eq!(shown.chars().count(), 64 + 1, "{shown}");
     assert!(shown.ends_with('…'), "{shown}");
     press("escape", cx);

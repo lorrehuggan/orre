@@ -189,7 +189,7 @@ pub enum NoticeMessage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LastRestore {
     pub pre_restore: PathBuf,
-    /// The backup was older and updated to this version.
+    /// The backup was older and upgraded to this version of Orre.
     pub migrated: bool,
     /// Newer access-log rows kept from the replaced database; `None` when
     /// carrying them failed.
