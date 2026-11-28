@@ -5182,6 +5182,7 @@ dependencies = [
  "orre-core",
  "orre-import",
  "orre-mcp",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tracing",

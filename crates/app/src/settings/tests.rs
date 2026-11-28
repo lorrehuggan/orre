@@ -529,6 +529,7 @@ fn the_restore_dialog_opens_before_what_it_undoes_is_counted(cx: &mut TestAppCon
         path: taken.path.clone(),
         taken_at: Some(taken.taken_at),
         local: None,
+        from_file: false,
     };
     let dialog =
         cx.update(|window, cx| cx.new(|cx| RestoreDialog::new(settings, target, window, cx)));
@@ -1257,3 +1258,6 @@ fn the_sample_month_start_cannot_change(cx: &mut TestAppContext) {
     assert_eq!(body.as_of, "as of today, Tue 10 Nov");
     assert_eq!(body.months[1].dates, "Fri 23 Oct – Tue 24 Nov");
 }
+
+/// The Restore dialog's refusals (SLI-71).
+mod refusal;

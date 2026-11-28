@@ -419,6 +419,7 @@ fn main() -> Result<()> {
                         path: PathBuf::from("orre-laptop.db"),
                         taken_at: None,
                         local: None,
+                        from_file: true,
                     },
                     Stage::Checked(orre_core::backup::detail::Assessment::TooNew {
                         found: supported + 2,
@@ -433,6 +434,7 @@ fn main() -> Result<()> {
                         path: row.backup.path.clone(),
                         taken_at: Some(row.backup.taken_at),
                         local: Some(row.local),
+                        from_file: false,
                     },
                     Stage::Checked(orre_core::backup::detail::Assessment::Ready(
                         orre_core::backup::RestoreCheck {

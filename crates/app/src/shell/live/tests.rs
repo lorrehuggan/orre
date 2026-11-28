@@ -714,7 +714,7 @@ fn a_restore_pauses_the_checks_and_every_view_reads_the_restored_data(cx: &mut T
     assert!(!checking, "no check while the restore runs");
 
     let restored = store.restore(&backup.path).unwrap();
-    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restored(&restored, cx)));
+    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restored(&restored, None, cx)));
     settle(cx);
 
     assert!(!listed(&shell, filed, cx));
@@ -753,6 +753,7 @@ fn restore_dialog(
         path: backup.to_path_buf(),
         taken_at: None,
         local: None,
+        from_file: false,
     };
     let dialog =
         cx.update(|window, cx| cx.new(|cx| RestoreDialog::new(settings, target, window, cx)));
@@ -1313,7 +1314,7 @@ fn restore(
     cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restoring(cx)));
     settle(cx);
     let restored = store.restore(backup).unwrap();
-    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restored(&restored, cx)));
+    cx.update(|_, cx| settings.update(cx, |settings, cx| settings.restored(&restored, None, cx)));
     settle(cx);
 }
 

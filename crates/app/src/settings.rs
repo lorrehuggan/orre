@@ -115,6 +115,9 @@ pub struct RestoreTarget {
     pub taken_at: Option<DateTime<Utc>>,
     /// That time, local.
     pub local: Option<chrono::NaiveDateTime>,
+    /// Chosen with "Restore from a file…": the dialog offers "Choose
+    /// another file…" (SLI-71).
+    pub from_file: bool,
 }
 
 /// The backup the Delete backup dialog would delete (R.12).
@@ -172,13 +175,25 @@ pub enum NoticeMessage {
     Copied { file: String },
     /// After a backup was deleted: the space it freed.
     Deleted { size: u64 },
-    /// After a restore.
-    Restored {
-        migrated: bool,
-        log_kept: Option<usize>,
-    },
+    /// After a restore: when the backup was taken ("28 Nov 2026, 11:40"),
+    /// when known. One fact: whether it was updated and what the access log
+    /// kept are under "Since this backup" on the backup it took first
+    /// ([`LastRestore`]).
+    Restored { from: Option<String> },
     /// Something failed; the text says what, and that nothing changed.
     Failed(SharedString),
+}
+
+/// What a restore did beyond replacing the database, shown on the backup it
+/// took of the database it replaced (`SettingsView::restore_lines`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastRestore {
+    pub pre_restore: PathBuf,
+    /// The backup was older and upgraded to this version of Orre.
+    pub migrated: bool,
+    /// Newer access-log rows kept from the replaced database; `None` when
+    /// carrying them failed.
+    pub log_kept: Option<usize>,
 }
 
 /// Where Settings' data comes from.
@@ -244,6 +259,8 @@ pub struct SettingsView {
     day_select: SelectState,
 
     notice: Option<Notice>,
+    /// What the last restore in this window did (session only).
+    last_restore: Option<LastRestore>,
     panel_focus: FocusHandle,
     list_focus: FocusHandle,
     _task: Option<Task<()>>,
@@ -369,6 +386,7 @@ impl SettingsView {
             month_start_error: None,
             day_select: SelectState::new(cx),
             notice: None,
+            last_restore: None,
             panel_focus: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             _task: None,
@@ -941,6 +959,7 @@ impl SettingsView {
             path: row.backup.path.clone(),
             taken_at: Some(row.backup.taken_at),
             local: Some(row.local),
+            from_file: false,
         }));
     }
 
@@ -964,17 +983,8 @@ impl SettingsView {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let named = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(orre_core::backup::parse_file_name)
-                .map(|(_, taken_at)| taken_at);
             let _ = this.update(cx, |_, cx| {
-                cx.emit(SettingsEvent::RestoreRequested(RestoreTarget {
-                    path,
-                    taken_at: named,
-                    local: named.map(store::local),
-                }))
+                cx.emit(SettingsEvent::RestoreRequested(RestoreTarget::chosen(path)))
             });
         }));
     }
@@ -1127,13 +1137,23 @@ impl SettingsView {
         cx.emit(SettingsEvent::RestoreFailed);
     }
 
-    /// After a restore (the Restore dialog): reads everything again, says
-    /// so, and tells the shell.
-    pub fn restored(&mut self, restored: &orre_core::backup::Restored, cx: &mut Context<Self>) {
+    /// After a restore (the Restore dialog) of the backup taken at
+    /// `taken` (local), when known: reads everything again, says so, and
+    /// tells the shell.
+    pub fn restored(
+        &mut self,
+        restored: &orre_core::backup::Restored,
+        taken: Option<chrono::NaiveDateTime>,
+        cx: &mut Context<Self>,
+    ) {
+        self.last_restore = restored.pre_restore.as_ref().map(|backup| LastRestore {
+            pre_restore: backup.path.clone(),
+            migrated: restored.migrated_to.is_some(),
+            log_kept: restored.log_rows_carried,
+        });
         self.notice = Some(Notice {
             message: NoticeMessage::Restored {
-                migrated: restored.migrated_to.is_some(),
-                log_kept: restored.log_rows_carried,
+                from: taken.map(restore::refusal::when),
             },
             reveal: restored
                 .pre_restore

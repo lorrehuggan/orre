@@ -21,7 +21,7 @@ use crate::ui::text::TextRoleExt as _;
 use crate::ui::tracked::Tracked;
 
 use super::data::BackupsData;
-use super::{Notice, NoticeMessage, SettingsView};
+use super::{Notice, NoticeMessage, Section, SettingsView};
 
 /// The key context of a Settings list, where the arrow keys move the
 /// selection.
@@ -437,6 +437,10 @@ pub fn backup_order(backups: &BackupsData) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The end of the notification after a restore (SLI-71): a restore
+/// switches every AI client off.
+pub const AI_CLIENTS_ARE_OFF: &str = "AI clients are off";
+
 /// What a notification says: runs, or plain text.
 pub enum NoticeText {
     Rich(Vec<Run>),
@@ -472,18 +476,13 @@ pub fn notice_text(message: &NoticeMessage) -> NoticeText {
             plain(" · ").color(color::TEXT_MUTED),
             mono(file_size(*size)).color(color::TEXT_MUTED),
         ]),
-        NoticeMessage::Restored { migrated, log_kept } => {
+        NoticeMessage::Restored { from } => {
             let mut text = String::from("Restored the backup");
-            if *migrated {
-                text.push_str(" and updated it to this version");
+            if let Some(from) = from {
+                text.push_str(&format!(" from {from}"));
             }
-            match log_kept {
-                Some(0) | None => {}
-                Some(rows) => text.push_str(&format!(
-                    " · kept {rows} newer access-log {}",
-                    if *rows == 1 { "entry" } else { "entries" }
-                )),
-            }
+            text.push_str(" · ");
+            text.push_str(AI_CLIENTS_ARE_OFF);
             NoticeText::Plain(text)
         }
         NoticeMessage::Failed(text) => NoticeText::Plain(text.to_string()),
@@ -499,8 +498,23 @@ pub fn notice_bar(notice: &Notice, cx: &mut Context<SettingsView>) -> Notificati
     };
     let view = cx.entity().downgrade();
     let dismiss = view.clone();
+    let clients = view.clone();
     NotificationBar::new(message)
         .failed(failed)
+        // After a restore: every AI client is off; this goes to them.
+        .when(
+            matches!(notice.message, NoticeMessage::Restored { .. }),
+            |this| {
+                this.action(
+                    // Outline, as a bar's first action is.
+                    Button::new("notice-ai-clients", super::clients::TITLE)
+                        .with_surface(color::FLOAT)
+                        .on_click(move |_, _, cx: &mut App| {
+                            let _ = clients.update(cx, |this, cx| this.show(Section::Clients, cx));
+                        }),
+                )
+            },
+        )
         .when_some(notice.reveal.clone(), |this, path| {
             this.action(
                 Button::new("notice-show-in-folder", "Show in folder")

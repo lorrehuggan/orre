@@ -5,7 +5,8 @@
 //!
 //! `float`, 1px `border`, `radius-lg`, the Toolbar shadow; 8px block, 12px
 //! start and 8px end padding, 12px gaps. A 14px `check`, the message in
-//! body type, an optional outline action ("Undo", "Show in folder") and a
+//! body type, at most two actions (the first outline, the second ghost:
+//! "AI clients", "Show in folder"; or one, "Undo", "Show in folder") and a
 //! 24px dismiss icon button. It stays until dismissed or replaced.
 //!
 //! Composed for M3.16 (not drawn): a failure uses the same bar with the
@@ -18,7 +19,7 @@ use gpui_kit::{
 };
 
 use crate::theme::tokens::{color, radius, shadow, size, spacing, typography};
-use crate::ui::button::{Button, IconButton, IconButtonSize};
+use crate::ui::button::{Button, ButtonVariant, IconButton, IconButtonSize};
 use crate::ui::icon::Glyph;
 use crate::ui::text::TextRoleExt as _;
 
@@ -30,7 +31,7 @@ type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 pub struct NotificationBar {
     message: AnyElement,
     failed: bool,
-    action: Option<Button>,
+    actions: Vec<Button>,
     on_dismiss: Option<ClickHandler>,
 }
 
@@ -41,7 +42,7 @@ impl NotificationBar {
         Self {
             message: message.into_any_element(),
             failed: false,
-            action: None,
+            actions: Vec::new(),
             on_dismiss: None,
         }
     }
@@ -53,9 +54,14 @@ impl NotificationBar {
         self
     }
 
-    /// Adds an outline action after the message.
+    /// Adds an action after the message, after those already there: the
+    /// first is drawn outline, the second ghost. A bar takes at most two;
+    /// a third is left out.
     pub fn action(mut self, button: Button) -> Self {
-        self.action = Some(button);
+        debug_assert!(self.actions.len() < 2, "a notification takes two actions");
+        if self.actions.len() < 2 {
+            self.actions.push(button);
+        }
         self
     }
 
@@ -113,7 +119,13 @@ impl RenderOnce for NotificationBar {
                     })
                     .child(self.message),
             )
-            .children(self.action)
+            .children(self.actions.into_iter().enumerate().map(|(index, button)| {
+                button.with_variant(if index == 0 {
+                    ButtonVariant::Outline
+                } else {
+                    ButtonVariant::Ghost
+                })
+            }))
             .child(dismiss)
     }
 }

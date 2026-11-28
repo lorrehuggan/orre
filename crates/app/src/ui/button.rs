@@ -60,8 +60,9 @@ use crate::ui::{PreviewState, faded};
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
-/// The `group` name on an Orre button, for content that follows its hover.
-const GROUP: &str = "orre-button";
+/// The `group` name on an Orre button, for content that follows its hover
+/// (such as a [`Button::leading`] element).
+pub const GROUP: &str = "orre-button";
 
 /// Which row of the `DESIGN.md` button table a [`Button`] is.
 ///
@@ -119,6 +120,11 @@ pub enum ButtonVariant {
     /// ghost): the outline's 24px geometry with no border, `text-secondary`
     /// label 11/14 500. Hovers to `hover`, presses to `control-active`.
     Ghost,
+    /// A disclosure that opens a block under it (the Restore dialog's
+    /// "Details", SLI-71): the ghost, with its label `text-muted` at rest
+    /// and `text-secondary` while hovered or pressed. Its chevron is a
+    /// [`Button::leading`] element that follows [`GROUP`]'s hover.
+    Disclosure,
 }
 
 impl ButtonVariant {
@@ -236,6 +242,17 @@ impl ButtonVariant {
                     color::TEXT_SECONDARY,
                 )
             },
+            Self::Disclosure => Appearance {
+                border: None,
+                foreground_active: Some(color::TEXT_SECONDARY),
+                ..outline(
+                    size::CONTROL_SM,
+                    spacing::S2,
+                    radius::MD,
+                    color::HAIRLINE,
+                    color::TEXT_MUTED,
+                )
+            },
             Self::AgentGhost => Appearance {
                 height: size::CONTROL_XL,
                 padding_x: spacing::S3,
@@ -259,12 +276,14 @@ impl ButtonVariant {
                 weight: weight::BOLD,
                 ..typography::BUTTON
             },
-            Self::Outline | Self::OutlineCompact | Self::DestructiveCompact | Self::Ghost => {
-                TextRole {
-                    weight: weight::MEDIUM,
-                    ..typography::CAPTION
-                }
-            }
+            Self::Outline
+            | Self::OutlineCompact
+            | Self::DestructiveCompact
+            | Self::Ghost
+            | Self::Disclosure => TextRole {
+                weight: weight::MEDIUM,
+                ..typography::CAPTION
+            },
             Self::Secondary
             | Self::DestructiveOutline
             | Self::AgentOutline
@@ -433,6 +452,9 @@ pub struct Button {
     variant: ButtonVariant,
     shortcut: Option<SharedString>,
     icon: Option<Glyph>,
+    /// Before the label in place of [`Self::icon`]: an element the caller
+    /// draws, such as a turning chevron.
+    leading: Option<AnyElement>,
 }
 
 impl Button {
@@ -444,7 +466,16 @@ impl Button {
             variant: ButtonVariant::default(),
             shortcut: None,
             icon: None,
+            leading: None,
         }
+    }
+
+    /// Leads the label with `element`, 6px before it, in place of an icon.
+    /// It paints itself; to follow the button's hover, style it with
+    /// `group_hover(GROUP, …)`.
+    pub fn leading(mut self, element: impl IntoElement) -> Self {
+        self.leading = Some(element.into_any_element());
+        self
     }
 
     /// Leads the label with `glyph` in the label's colour, 6px before it
@@ -535,6 +566,21 @@ impl RenderOnce for Button {
         let disabled = self.control.disabled_mode(&look, self.shortcut.is_some());
         let paint = |color| disabled.map_or(color, |disabled| disabled.paint(color));
         let label = label(self.variant.text(), self.label.clone());
+        // A label that brightens on hover, as an icon button's icon does.
+        let label = match look.foreground_active {
+            Some(active) if disabled.is_none() && self.control.preview.is_none() => {
+                label.group_hover(GROUP, |style| style.text_color(active))
+            }
+            Some(active)
+                if matches!(
+                    self.control.preview,
+                    Some(PreviewState::Hovered | PreviewState::Pressed)
+                ) =>
+            {
+                label.text_color(active)
+            }
+            _ => label,
+        };
         let content = match self.variant.leading_icon() {
             Some((glyph, icon_color)) => div()
                 .flex()
@@ -543,15 +589,22 @@ impl RenderOnce for Button {
                 .child(glyph.render().text_color(paint(icon_color)))
                 .child(label)
                 .into_any_element(),
-            None => match self.icon {
-                Some(glyph) => div()
+            None => match (self.leading, self.icon) {
+                (Some(leading), _) => div()
+                    .flex()
+                    .items_center()
+                    .gap(spacing::S1_5)
+                    .child(leading)
+                    .child(label)
+                    .into_any_element(),
+                (None, Some(glyph)) => div()
                     .flex()
                     .items_center()
                     .gap(spacing::S1_5)
                     .child(glyph.render().text_color(paint(look.foreground)))
                     .child(label)
                     .into_any_element(),
-                None => label.into_any_element(),
+                (None, None) => label.into_any_element(),
             },
         };
         let content = match self.shortcut {

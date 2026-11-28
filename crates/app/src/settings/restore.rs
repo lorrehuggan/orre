@@ -6,10 +6,11 @@
 //! (`backup::detail::assess`): the file is intact (SQLite's integrity
 //! check), and this version of Orre can read it (migration history, a
 //! schema no newer). Each is a 24px row with a `check`, or a `danger` row
-//! with `alert` when it fails; then what restoring undoes, and that the
-//! current state is backed up first and AI clients are refused until it's
-//! done. Cancel / "Restore" (neutral primary: restoring is undone by
-//! restoring that backup). Restore stays disabled unless both checks pass.
+//! with `alert` when it fails; then what restoring undoes, that the
+//! current state is backed up first, and that AI clients are switched off
+//! afterwards. Cancel / "Restore" (neutral primary: restoring is undone by
+//! restoring that backup). Restore stays disabled unless the checks pass.
+//! The checklist and its refusals (SLI-71) are in [`refusal`].
 //! Restoring runs `backup::restore`, which checks again, backs up, swaps
 //! the files under the restore lock and migrates.
 //!
@@ -20,13 +21,16 @@
 //! refused, is said in `danger` with what to do; an earlier restore that
 //! stopped part-way is mentioned, as `orre restore` does. R.12 adds a
 //! caption that user presets aren't in backups ([`PRESETS_NOT_IN_BACKUPS`]),
-//! and SLI-48 one that AI clients are off afterwards ([`AI_OFF_AFTER_RESTORE`]).
+//! and SLI-48 one that AI clients are off afterwards, since SLI-71
+//! [`refusal::AI_OFF_PARAGRAPH`] (`orre restore` prints
+//! [`AI_OFF_AFTER_RESTORE`]).
+
+pub mod refusal;
 
 use gpui_kit::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
     Render, SharedString, Styled as _, Task, Window, div,
 };
-use orre_core::backup::Current;
 use orre_core::backup::detail::{Assessment, Since};
 
 use crate::accounts::DialogClosed;
@@ -40,7 +44,7 @@ use gpui_kit::component::Disableable as _;
 
 use super::store::SettingsStore;
 use super::table::{Run, caption, count, mono, plain, plural, rich};
-use super::{RestoreTarget, SettingsView, sentence};
+use super::{RestoreTarget, SettingsView};
 
 /// Under the checks (composed, R.12): user presets live outside the
 /// database, so a backup neither holds them nor changes them.
@@ -48,8 +52,9 @@ pub const PRESETS_NOT_IN_BACKUPS: &str = "Your own bank presets aren't in backup
      doesn't change them. An account whose preset isn't on this computer asks for its columns \
      again at the next import.";
 
-/// Under the checks, and printed by `orre restore`: a restore switches
-/// every AI client off (`backup::restore`).
+/// Printed by `orre restore`: a restore switches every AI client off
+/// (`backup::restore`). The dialog says [`refusal::AI_OFF_PARAGRAPH`]
+/// instead; keep the two in step.
 pub const AI_OFF_AFTER_RESTORE: &str =
     "AI clients are switched off after a restore; turn them back on in Settings.";
 
@@ -74,9 +79,10 @@ pub struct RestoreDialog {
     /// What restoring undoes, when the backup's time is known and the
     /// count, read in the background, has landed.
     since: Option<Since>,
-    today: chrono::NaiveDate,
     /// Why the last restore was refused.
     error: Option<SharedString>,
+    /// Row ③, the Details block and "Choose another file…" (SLI-71).
+    refusal: refusal::RefusalState,
     focus: FocusHandle,
     _task: Option<Task<()>>,
     /// Reading `since` in the background: it reads the backup, which may be
@@ -95,21 +101,21 @@ impl RestoreDialog {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let (store, today) = {
-            let view = settings.read(cx);
-            (view.store().ok().cloned(), view.clock().today)
-        };
+        let store = settings.read(cx).store().ok().cloned();
         let mut dialog = Self {
             settings,
             target,
             stage: Stage::Checking,
             since: None,
-            today,
             error: None,
+            refusal: refusal::RefusalState::new(cx),
             focus,
             _task: None,
             _since_read: None,
         };
+        if dialog.target.from_file {
+            dialog.refusal.choose.focus(window, cx);
+        }
         match store {
             Some(store) => {
                 dialog.read_since(store.clone(), cx);
@@ -131,14 +137,13 @@ impl RestoreDialog {
         since: Option<Since>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let today = settings.read(cx).clock().today;
         Self {
             settings,
             target,
             stage,
             since,
-            today,
             error: None,
+            refusal: refusal::RefusalState::new(cx),
             focus: cx.focus_handle(),
             _task: None,
             _since_read: None,
@@ -177,15 +182,17 @@ impl RestoreDialog {
 
     fn check(&mut self, store: SettingsStore, cx: &mut Context<Self>) {
         let path = self.target.path.clone();
-        let work = cx
-            .background_executor()
-            .spawn(async move { store.assess(&path).map_err(|error| error.to_string()) });
+        let work = cx.background_executor().spawn(async move {
+            store
+                .assess(&path)
+                .map_err(|error| refusal::error_text(&*error))
+        });
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |this, cx| {
                 this.stage = match result {
                     Ok(assessment) => Stage::Checked(assessment),
-                    Err(error) => Stage::Unreadable(sentence(&error)),
+                    Err(error) => Stage::Unreadable(error),
                 };
                 cx.notify();
             });
@@ -194,10 +201,7 @@ impl RestoreDialog {
 
     /// Whether Restore can be pressed.
     pub fn can_restore(&self) -> bool {
-        match &self.stage {
-            Stage::Checked(Assessment::Ready(check)) => check.current != Current::Unreadable,
-            _ => false,
-        }
+        self.passed() && !self.current_unreadable()
     }
 
     /// Restores on a background thread, then closes and tells Settings.
@@ -216,18 +220,18 @@ impl RestoreDialog {
         let path = self.target.path.clone();
         let work = cx
             .background_executor()
-            .spawn(async move { store.restore(&path).map_err(|error| error.to_string()) });
+            .spawn(async move { store.restore(&path).map_err(refusal::failure) });
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(restored) => {
+                    let taken = this.target.local;
                     this.settings
-                        .update(cx, |settings, cx| settings.restored(&restored, cx));
+                        .update(cx, |settings, cx| settings.restored(&restored, taken, cx));
                     cx.emit(DialogClosed);
                 }
-                Err(error) => {
-                    this.stage = previous;
-                    this.error = Some(sentence(&error));
+                Err(failure) => {
+                    this.refused(failure, previous);
                     this.settings
                         .update(cx, |settings, cx| settings.restore_failed(cx));
                     cx.notify();
@@ -243,27 +247,25 @@ impl RestoreDialog {
         cx.emit(DialogClosed);
     }
 
-    /// "Restore the backup from 10 Nov, 14:02?", or the file's name.
+    /// "Restore the backup from 10 Nov 2026, 14:02?", or the file's name
+    /// ([`refusal::file_title`]: escaped and capped).
     fn title_runs(&self) -> Vec<Run> {
         match self.target.local {
-            Some(local) => {
-                use chrono::Datelike as _;
-                let when = if local.year() == self.today.year() {
-                    local.format("%-d %b, %H:%M").to_string()
-                } else {
-                    local.format("%-d %b %Y, %H:%M").to_string()
-                };
-                vec![plain("Restore the backup from "), mono(when), plain("?")]
-            }
+            Some(local) => vec![
+                plain("Restore the backup from "),
+                mono(refusal::when(local)),
+                plain("?"),
+            ],
             None => vec![
                 plain("Restore "),
-                mono(
-                    self.target
+                mono(refusal::file_title(
+                    &self
+                        .target
                         .path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                ),
+                )),
                 plain("?"),
             ],
         }
@@ -274,21 +276,51 @@ impl RestoreDialog {
     }
 
     /// What the dialog shows, as plain data (test-only, ROADMAP U.3): its
-    /// title, the error, and Cancel and Restore (off while it restores,
-    /// Restore until the checks pass).
+    /// title, the checklist's rows, body and open Details as fields
+    /// (`describe_checks`), the paragraphs of a backup that can be
+    /// restored as `caption` fields, the error, and Cancel and Restore (off
+    /// while it restores, Restore until the checks pass), then the rest
+    /// (`describe_actions`).
     #[cfg(any(test, feature = "dev-driver"))]
     pub fn describe(&self) -> crate::ui::describe::Dialog {
         use crate::ui::describe::{Action, Dialog};
         let restoring = self.stage == Stage::Restoring;
+        let mut fields = self.describe_checks();
+        fields.extend(
+            self.ready_captions()
+                .into_iter()
+                .map(|text| ("caption".to_owned(), text.to_owned())),
+        );
+        let mut actions = vec![
+            Action::button("Cancel", !restoring),
+            Action::button("Restore", self.can_restore() && !restoring),
+        ];
+        actions.extend(self.describe_actions());
         Dialog {
             title: Run::joined(&self.title_runs()),
-            fields: Vec::new(),
+            fields,
             error: self.error.as_ref().map(ToString::to_string),
-            actions: vec![
-                Action::button("Cancel", !restoring),
-                Action::button("Restore", self.can_restore() && !restoring),
-            ],
+            actions,
         }
+    }
+
+    /// The fixed paragraphs under the checks of a backup that can be
+    /// restored (and while it restores): it's backed up first, AI clients
+    /// are switched off after, presets aren't in backups.
+    fn ready_captions(&self) -> Vec<&'static str> {
+        if !(self.passed() || self.stage == Stage::Restoring) {
+            return Vec::new();
+        }
+        vec![
+            if self.stage == Stage::Restoring {
+                "Restoring… Orre backs up how things are now first."
+            } else {
+                "Orre backs up how things are now before it swaps the files, so you can \
+                 restore that backup to come back."
+            },
+            refusal::AI_OFF_PARAGRAPH,
+            PRESETS_NOT_IN_BACKUPS,
+        ]
     }
 }
 
@@ -393,8 +425,6 @@ pub(crate) fn undoes(since: &Since) -> Vec<Run> {
 impl Render for RestoreDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut body: Vec<AnyElement> = Vec::new();
-        let mut checks: Vec<AnyElement> = Vec::new();
-        let intact = || vec![plain("integrity check")];
         let mut note: Option<SharedString> = None;
         match &self.stage {
             Stage::Checking => body.push(caption("Checking the file…").into_any_element()),
@@ -405,63 +435,17 @@ impl Render for RestoreDialog {
             Stage::Checked(assessment) => Some(assessment.clone()),
             _ => None,
         };
-        match &assessment {
-            Some(Assessment::Ready(check)) => {
-                checks.push(check_row(true, "The file is intact", intact()));
-                checks.push(check_row(
-                    true,
-                    "This version of Orre can read it",
-                    vec![plain("schema "), mono(check.schema_version.to_string())],
-                ));
-                if check.current == Current::Unreadable {
-                    note = Some(
-                        "The current database can't be read, so it can't be backed up first. \
-                         Move it (and any -wal and -shm files beside it) aside to restore over \
-                         it."
-                        .into(),
-                    );
-                }
-            }
-            Some(Assessment::Damaged { .. }) => {
-                checks.push(check_row(false, "The file is damaged", intact()));
-            }
-            Some(Assessment::NotOrre) => {
-                checks.push(check_row(true, "The file is intact", intact()));
-                checks.push(check_row(
-                    false,
-                    "It isn't an Orre backup",
-                    vec![plain("no migration history")],
-                ));
-            }
-            Some(Assessment::TooNew { found, supported }) => {
-                checks.push(check_row(true, "The file is intact", intact()));
-                checks.push(check_row(
-                    false,
-                    "It was made by a newer Orre",
-                    vec![
-                        plain("schema "),
-                        mono(found.to_string()),
-                        plain(", this reads up to "),
-                        mono(supported.to_string()),
-                    ],
-                ));
-            }
-            Some(Assessment::OtherHistory) => {
-                checks.push(check_row(true, "The file is intact", intact()));
-                checks.push(check_row(
-                    false,
-                    "It's from a different build of Orre",
-                    vec![plain("migration history")],
-                ));
-            }
-            None => {}
+        if self.current_unreadable() {
+            note = Some(
+                "The current database can't be read, so it can't be backed up first. \
+                 Move it (and any -wal and -shm files beside it) aside to restore over \
+                 it."
+                .into(),
+            );
         }
-        if !checks.is_empty() {
-            body.push(div().flex().flex_col().children(checks).into_any_element());
-        }
+        body.extend(self.render_checks(cx));
 
-        let ready =
-            matches!(&assessment, Some(Assessment::Ready(_))) || self.stage == Stage::Restoring;
+        let ready = self.passed() || self.stage == Stage::Restoring;
         if ready {
             if let Some(since) = self.since.as_ref().filter(|since| !since.is_empty()) {
                 body.push(
@@ -474,18 +458,9 @@ impl Render for RestoreDialog {
                         .into_any_element(),
                 );
             }
-            body.push(
-                caption(if self.stage == Stage::Restoring {
-                    "Restoring… Orre backs up how things are now first. AI clients are \
-                     refused until it's done."
-                } else {
-                    "Orre backs up how things are now before it swaps the files, so you can \
-                     restore that backup to come back. AI clients are refused until it's done."
-                })
-                .into_any_element(),
-            );
-            body.push(caption(AI_OFF_AFTER_RESTORE).into_any_element());
-            body.push(caption(PRESETS_NOT_IN_BACKUPS).into_any_element());
+            for text in self.ready_captions() {
+                body.push(caption(text).into_any_element());
+            }
             if let Some(Assessment::Ready(check)) = &assessment
                 && check.interrupted.is_some()
             {
@@ -497,16 +472,6 @@ impl Render for RestoreDialog {
                     .into_any_element(),
                 );
             }
-        } else if let Some(assessment) = &assessment {
-            body.push(
-                caption(match assessment {
-                    Assessment::TooNew { .. } => {
-                        "Update Orre, then restore it. Nothing has changed."
-                    }
-                    _ => "It can't be restored. Nothing has changed.",
-                })
-                .into_any_element(),
-            );
         }
         if let Some(note) = note {
             body.push(error_caption(note).into_any_element());
@@ -517,7 +482,10 @@ impl Render for RestoreDialog {
 
         let restoring = self.stage == Stage::Restoring;
         let on_cancel = cx.entity().downgrade();
-        let dialog = Dialog::with_title(self.title(), &self.focus);
+        let mut dialog = Dialog::with_title(self.title(), &self.focus);
+        if let Some(choose) = self.render_choose(cx) {
+            dialog = dialog.footer_lead(choose);
+        }
         body.into_iter()
             .fold(dialog, |dialog, part| dialog.body(part))
             .action(
