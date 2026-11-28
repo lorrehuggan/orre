@@ -230,6 +230,11 @@ pub struct SettingsView {
     selected_backup: Option<PathBuf>,
     /// What restoring the selected backup would undo.
     since: Option<(PathBuf, Since)>,
+    /// That count being read in the background for the backup it names
+    /// (`load_since`): it reads the backup, which may be large or hostile.
+    /// A newer read replaces it and reading the backups again drops it, so
+    /// a read for another backup, or an older database, can't land.
+    since_read: Option<(PathBuf, Task<()>)>,
     /// A backup is being taken.
     backing_up: bool,
 
@@ -296,7 +301,7 @@ impl SettingsView {
             .rows
             .first()
             .map(|row| (row.backup.path.clone(), fixture::since()));
-        view.select_defaults();
+        view.select_defaults(cx);
         view
     }
 
@@ -358,6 +363,7 @@ impl SettingsView {
             backups_error: None,
             selected_backup: None,
             since: None,
+            since_read: None,
             backing_up: false,
             month_start: MonthStart::CALENDAR,
             month_start_error: None,
@@ -442,7 +448,7 @@ impl SettingsView {
         self.notice = None;
         self.day_select.dismiss();
         self.reload_section(section);
-        self.select_defaults();
+        self.select_defaults(cx);
         cx.notify();
     }
 
@@ -458,7 +464,7 @@ impl SettingsView {
             self.reload_section(section);
         }
         self.reload_log_pages(loaded);
-        self.select_defaults();
+        self.select_defaults(cx);
         cx.notify();
     }
 
@@ -487,7 +493,7 @@ impl SettingsView {
             this.update(cx, |this, cx| {
                 this.clients_read = None;
                 this.land_clients(result);
-                this.select_defaults();
+                this.select_defaults(cx);
                 cx.notify();
             })
             .ok();
@@ -594,6 +600,7 @@ impl SettingsView {
                     }
                 }
                 self.since = None;
+                self.since_read = None;
             }
             Section::MonthStart => match store.load_month_start() {
                 Ok(start) => {
@@ -645,7 +652,7 @@ impl SettingsView {
     }
 
     /// Selects the first row of each list whose selection is gone.
-    fn select_defaults(&mut self) {
+    fn select_defaults(&mut self, cx: &mut Context<Self>) {
         if self
             .selected_client
             .as_ref()
@@ -666,16 +673,24 @@ impl SettingsView {
         {
             self.selected_backup = self.backups.rows.first().map(|row| row.backup.path.clone());
         }
-        self.load_since();
+        self.load_since(cx);
     }
 
-    /// Reads what restoring the selected backup would undo, unless known.
-    fn load_since(&mut self) {
+    /// Reads what restoring the selected backup would undo, unless known or
+    /// being read, on a background thread: until it lands, "Since this
+    /// backup" lists nothing.
+    fn load_since(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.selected_backup.clone() else {
             self.since = None;
+            self.since_read = None;
             return;
         };
-        if self.since.as_ref().is_some_and(|(known, _)| *known == path) {
+        if self.since.as_ref().is_some_and(|(known, _)| *known == path)
+            || self
+                .since_read
+                .as_ref()
+                .is_some_and(|(reading, _)| *reading == path)
+        {
             return;
         }
         let Source::Database(store) = &self.source else {
@@ -684,13 +699,38 @@ impl SettingsView {
         let Some(row) = self.backups.row(&path) else {
             return;
         };
-        self.since = match store.since(row.backup.taken_at) {
-            Ok(since) => Some((path, since)),
-            Err(error) => {
-                tracing::warn!(%error, "couldn't count what restoring would undo");
-                None
-            }
-        };
+        let store = store.clone();
+        let (backup, taken_at) = (row.backup.path.clone(), row.backup.taken_at);
+        let work = cx
+            .background_executor()
+            .spawn(async move { store.since(&backup, taken_at) });
+        let reading = path.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = work.await;
+            this.update(cx, |this, cx| {
+                if this
+                    .since_read
+                    .as_ref()
+                    .is_none_or(|(current, _)| *current != reading)
+                {
+                    return;
+                }
+                this.since_read = None;
+                if this.selected_backup.as_ref() != Some(&reading) {
+                    return;
+                }
+                this.since = match result {
+                    Ok(since) => Some((reading, since)),
+                    Err(error) => {
+                        tracing::warn!(%error, "couldn't count what restoring would undo");
+                        None
+                    }
+                };
+                cx.notify();
+            })
+            .ok();
+        });
+        self.since_read = Some((path, task));
     }
 
     pub fn select_client(&mut self, name: ClientName, cx: &mut Context<Self>) {
@@ -706,7 +746,7 @@ impl SettingsView {
 
     pub fn select_backup(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.selected_backup = Some(path);
-        self.load_since();
+        self.load_since(cx);
         cx.notify();
     }
 
@@ -794,7 +834,7 @@ impl SettingsView {
             });
         }
         self.reload_section(Section::Clients);
-        self.select_defaults();
+        self.select_defaults(cx);
         if wrote {
             Self::wrote_clients(cx);
         }
@@ -834,7 +874,7 @@ impl SettingsView {
             .map_err(|error| sentence(&error.to_string()))?;
         self.reload_section(Section::Clients);
         self.selected_client = Some(name.clone());
-        self.select_defaults();
+        self.select_defaults(cx);
         Self::wrote_clients(cx);
         cx.emit(SettingsEvent::AiAccessChanged);
         cx.notify();
@@ -851,7 +891,7 @@ impl SettingsView {
             .remove(name)
             .map_err(|error| sentence(&error.to_string()))?;
         self.reload_section(Section::Clients);
-        self.select_defaults();
+        self.select_defaults(cx);
         Self::wrote_clients(cx);
         cx.emit(SettingsEvent::AiAccessChanged);
         cx.notify();
@@ -871,7 +911,7 @@ impl SettingsView {
         self.log_filter = filter;
         self.selected_call = None;
         self.reload_section(Section::Log);
-        self.select_defaults();
+        self.select_defaults(cx);
         self.log_scroll.set_offset(Default::default());
         cx.notify();
     }
@@ -981,7 +1021,7 @@ impl SettingsView {
                     },
                 });
                 this.reload_section(Section::Backups);
-                this.select_defaults();
+                this.select_defaults(cx);
                 cx.notify();
             });
         }));
@@ -1067,7 +1107,7 @@ impl SettingsView {
             reveal: None,
         });
         self.reload_section(Section::Backups);
-        self.select_defaults();
+        self.select_defaults(cx);
         cx.notify();
         Ok(())
     }

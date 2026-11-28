@@ -489,6 +489,116 @@ fn back_up_now_then_restore_it(cx: &mut TestAppContext) {
     );
 }
 
+/// A backup holding a transaction added by hand that has been deleted
+/// since, so restoring it would undo something.
+fn backup_with_a_deletion(scratch: &Scratch) -> backup::Backup {
+    use orre_core::account::{self, AccountKind, NewAccount};
+    use orre_core::manual::{self, ManualTransaction};
+    use orre_core::money::{Currency, Money};
+
+    let mut db = scratch.db();
+    let account = account::create(
+        &mut db,
+        &NewAccount::new("Current", AccountKind::Current, Currency::GBP),
+    )
+    .unwrap();
+    let entry = ManualTransaction::new(
+        account,
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+        Money::new(-1250, Currency::GBP),
+        "QA Pre Backup",
+    );
+    let gone = manual::create(&mut db, &entry).unwrap();
+    let taken = backup::create(&db, backup::Reason::Manual).unwrap();
+    manual::delete(&mut db, gone).unwrap();
+    taken
+}
+
+/// SLI-57: the Restore dialog opens at once, its checks running; what
+/// restoring undoes is read on a background thread and its sentence shows
+/// when that lands, so a large or hostile backup can't hold the window.
+#[gpui_kit::test]
+fn the_restore_dialog_opens_before_what_it_undoes_is_counted(cx: &mut TestAppContext) {
+    use super::restore::RestoreDialog;
+    use super::table::Run;
+
+    let scratch = Scratch::new();
+    let taken = backup_with_a_deletion(&scratch);
+    let (_shell, settings, cx) = open(cx, &scratch);
+    let target = RestoreTarget {
+        path: taken.path.clone(),
+        taken_at: Some(taken.taken_at),
+        local: None,
+    };
+    let dialog =
+        cx.update(|window, cx| cx.new(|cx| RestoreDialog::new(settings, target, window, cx)));
+    cx.update(|_, cx| {
+        let dialog = dialog.read(cx);
+        assert_eq!(dialog.stage(), &super::restore::Stage::Checking);
+        assert_eq!(dialog.since(), None, "not counted yet");
+    });
+    cx.run_until_parked();
+    cx.update(|_, cx| {
+        let dialog = dialog.read(cx);
+        assert!(dialog.can_restore(), "checked");
+        let since = dialog.since().expect("counted");
+        assert_eq!(
+            Run::joined(&super::restore::undoes(since)),
+            "the deletion of 1 transaction."
+        );
+    });
+}
+
+/// SLI-57: the inspector reads "Since this backup" in the background, and
+/// a read for a backup no longer selected doesn't land.
+#[gpui_kit::test]
+fn since_this_backup_is_read_in_the_background(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let older = backup_with_a_deletion(&scratch);
+    let (shell, settings, cx) = open(cx, &scratch);
+    click("settings-backups", cx);
+    click("back-up-now", cx);
+    let newer = backup::list(&scratch.path)
+        .unwrap()
+        .into_iter()
+        .find(|backup| backup.path != older.path)
+        .expect("the new backup");
+    let since_of = |cx: &mut VisualTestContext| cx.update(|_, cx| settings.read(cx).since.clone());
+
+    // Selecting the older backup starts a read; nothing shows until it
+    // lands, then its deletion does.
+    let path = older.path.clone();
+    cx.update(|_, cx| settings.update(cx, |view, cx| view.select_backup(path, cx)));
+    assert!(
+        since_of(cx).is_none_or(|(read, _)| read != older.path),
+        "not read yet"
+    );
+    cx.run_until_parked();
+    let (read, since) = since_of(cx).expect("read");
+    assert_eq!((read, since.deleted), (older.path.clone(), 1));
+    let shown = describe(&shell, &settings, cx);
+    let inspector = shown.inspector.expect("the backup");
+    assert!(
+        inspector.sections.iter().any(|section| section
+            .rows
+            .contains(&("Deleted".to_owned(), "1 transaction".to_owned()))),
+        "{inspector:?}"
+    );
+
+    // A read started for one backup, then another selected before it
+    // lands: only the selected one's count is kept.
+    cx.update(|_, cx| {
+        settings.update(cx, |view, cx| {
+            view.since = None;
+            view.select_backup(older.path.clone(), cx);
+            view.select_backup(newer.path.clone(), cx);
+        })
+    });
+    cx.run_until_parked();
+    let (read, _) = since_of(cx).expect("read");
+    assert_eq!(read, newer.path);
+}
+
 #[gpui_kit::test]
 fn the_backups_total_and_deleting_a_backup(cx: &mut TestAppContext) {
     let scratch = Scratch::new();

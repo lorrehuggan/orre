@@ -55,6 +55,10 @@ the monthly Overview (see the [roadmap](docs/ROADMAP.md)).
   import in a terminal or an AI client's suggestion.
 - **Backups and export.** A rotating local backup before every import and migration,
   manual backups, restore with integrity and schema checks, and export to CSV or JSON.
+- **Restore.** Before you confirm, Orre shows how much the restore will undo: the
+  imports, edits, Inbox suggestions and hand-added transactions since the backup, and
+  any hand-added transactions you've deleted since, which come back. Changes to rules,
+  accounts and settings are undone too, but not counted.
 - **CLI.** `orre import`, `accounts`, `undo-import`, `backup`, `restore`, `export`,
   `ai-access`, `budgets`, `schedules`, `inbox` and `categorize` work without the GUI.
   `orre schedules` turns a detected recurring payment into a schedule and flags missed

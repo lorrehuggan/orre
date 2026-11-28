@@ -7,10 +7,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::Args;
-use orre_core::backup::{self, Current, Reason, RestoreCheck};
+use orre_core::backup::{self, Current, Reason, RestoreCheck, detail};
+use orre_core::db::Database;
 
 use super::write_table;
-use crate::settings::restore::AI_OFF_AFTER_RESTORE;
+use crate::settings::restore::{AI_OFF_AFTER_RESTORE, undoes};
+use crate::settings::table::Run;
 
 #[derive(Debug, Args)]
 pub struct BackupArgs {
@@ -230,6 +232,18 @@ fn resolve(database: &Path, file: &Path) -> anyhow::Result<PathBuf> {
     );
 }
 
+/// What restoring the checked backup would undo, as the Restore dialog
+/// says it, when it has a backup's name (so its time is known), the current
+/// database is up to date, and there's something to undo. Counting is only
+/// a preview: a failure leaves the line out.
+fn since(database: &Path, checked: &RestoreCheck) -> Option<detail::Since> {
+    let (_, taken_at) = checked.named?;
+    let db = Database::open_existing(database).ok()?;
+    detail::since(&db, &checked.path, taken_at)
+        .ok()
+        .filter(|since| !since.is_empty())
+}
+
 fn write_check(
     database: &Path,
     checked: &RestoreCheck,
@@ -277,6 +291,13 @@ fn write_check(
                 "Restoring replaces it with the backup. It is backed up first, so the \
                  restore can be undone by restoring that backup."
             )?;
+            if let Some(since) = since(database, checked) {
+                writeln!(
+                    out,
+                    "Restoring undoes everything since then: {}",
+                    Run::joined(&undoes(&since))
+                )?;
+            }
         }
         Current::Unreadable => {
             writeln!(
