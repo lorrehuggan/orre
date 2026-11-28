@@ -367,7 +367,8 @@ pub enum Error {
     /// Closing before something the account holds would leave it dated
     /// after the account closed.
     #[error(
-        "the earliest the account can close is {earliest}: it has values or transactions up to then"
+        "the earliest the account can close is {earliest}: it has values or transactions up to then",
+        earliest = .earliest.format("%-d %b %Y")
     )]
     CloseTooEarly { earliest: NaiveDate },
 
