@@ -1289,6 +1289,39 @@ fn no_mouse_button_leaves_focus_on_a_column_title(cx: &mut TestAppContext) {
     assert_eq!(open_menu(&view, cx), Some(Menu::Row(pret)));
 }
 
+/// SLI-58: the bulk-action bar floats over the rows, and a pointer click on
+/// one of its actions mustn't reach the row beneath it too. In the shell,
+/// whose table runs down to the bar, the last row lies under Categorise.
+#[gpui_kit::test]
+fn a_click_on_the_bulk_bar_does_not_reach_the_row_beneath(cx: &mut TestAppContext) {
+    setup(cx);
+    cx.update(crate::shell::init);
+    let (shell, cx) = cx.add_window_view(|window, cx| {
+        crate::shell::ShellView::new(crate::shell::View::Transactions, window, cx)
+    });
+    redraw(cx);
+    let view = cx.update(|_, cx| shell.read(cx).transactions().clone());
+    let rows = listed(&view, cx);
+    let ids = rows[..2].to_vec();
+    click(row_id(ids[0]), cx);
+    press("shift-down", cx);
+    assert_eq!(selected(&view, cx), ids);
+    let beneath = cx.update(|window, _| {
+        let at = window.find("bulk-categorise").bounds().center();
+        rows.into_iter().find(|id| {
+            window
+                .try_find(row_id(*id))
+                .is_some_and(|row| row.bounds().contains(&at))
+        })
+    });
+    assert!(beneath.is_some(), "a row lies under Categorise");
+
+    click("bulk-categorise", cx);
+
+    assert_eq!(selected(&view, cx), ids, "the selection is kept");
+    assert_eq!(open_menu(&view, cx), Some(Menu::Bulk));
+}
+
 #[gpui_kit::test]
 fn tab_reaches_add_tag_in_the_inspector(cx: &mut TestAppContext) {
     let (view, mut cx) = open_rooted(cx);
