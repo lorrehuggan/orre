@@ -869,6 +869,26 @@ fn a_held_restore_lock_refuses_a_second_restore() {
 }
 
 #[test]
+fn a_restore_waits_for_a_lock_released_within_the_wait() {
+    let setup = Setup::new();
+    let held = hold_restore_lock(&setup.path);
+    let release_after = Duration::from_millis(150);
+    assert!(release_after < LOCK_WAIT);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(release_after);
+        drop(held);
+    });
+
+    let started = Instant::now();
+    restore(&setup.path, &setup.backup).unwrap();
+
+    assert!(started.elapsed() >= Duration::from_millis(100), "it waited");
+    releaser.join().unwrap();
+    assert_eq!(account_names(&setup.path), ["Backed up"]);
+    assert!(!restoring(&setup.path).unwrap());
+}
+
+#[test]
 fn a_restore_holds_its_lock_and_releases_it_when_done() {
     let setup = Setup::new();
     let lock = RestoreLock::acquire(&setup.path, &setup.backup).unwrap();

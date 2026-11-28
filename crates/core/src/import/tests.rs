@@ -930,6 +930,67 @@ fn a_closing_balance_is_checked_against_the_account() {
 }
 
 #[test]
+fn a_balance_the_file_restates_is_checked_again() {
+    let mut fixture = Fixture::new();
+    let account = fixture.account("Current");
+    fixture.anchor(account, 1, 10_000);
+    let file = || {
+        ofx(
+            vec![line(2, -500, "Coffee"), line(5, 1_000, "Refund")],
+            Some((5, 10_500)),
+        )
+    };
+    fixture.import_batch(account, file());
+
+    // Nothing changes, but the stored balance the file states again is
+    // still shown as checked.
+    let again = fixture.preview(account, file());
+    let FileBalanceStatus::AlreadyRecorded(id) = again.balances()[0].status else {
+        panic!("{:?}", again.balances());
+    };
+    assert_eq!(
+        again.reconciliation().checks,
+        [BalanceCheck {
+            balance: CheckedBalance::Stored(id),
+            date: day(5),
+            stated: gbp(10_500),
+            before: Some(CheckResult::Passed { since: day(1) }),
+            after: CheckResult::Passed { since: day(1) },
+        }]
+    );
+}
+
+#[test]
+fn only_the_same_balance_on_the_same_day_is_a_repeat() {
+    let mut fixture = Fixture::new();
+    let account = fixture.account("Current");
+    fixture.anchor(account, 1, 10_000);
+    let mut file = ofx(vec![line(2, -500, "Coffee")], Some((3, 9_500)));
+    for d in [4, 4] {
+        file.push_balance(DatedBalance {
+            date: day(d),
+            balance: gbp(9_500),
+        })
+        .unwrap();
+    }
+
+    let preview = fixture.preview(account, file);
+    let statuses: Vec<_> = preview
+        .balances()
+        .iter()
+        .map(|balance| (balance.date, balance.status))
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            (day(3), FileBalanceStatus::New),
+            (day(4), FileBalanceStatus::New),
+            (day(4), FileBalanceStatus::Repeated),
+        ]
+    );
+}
+
+#[test]
 fn the_first_balance_of_an_account_is_its_starting_point() {
     let mut fixture = Fixture::new();
     let account = fixture.account("Current");
