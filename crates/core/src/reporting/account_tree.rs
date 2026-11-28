@@ -1,10 +1,15 @@
 //! `account_tree`: the open accounts as the app's accounts panel lists them
 //! (ROADMAP M3.2; `DESIGN.md` → "Accounts panel"): pots under their parent,
-//! each account's latest balance and balance-check status, and net worth.
+//! each account's latest balance and balance-check status, and net worth,
+//! all as of today (SLI-77: the caller passes today's local date).
 //!
 //! - **Order**: accounts as they were created; each pot after its parent,
 //!   in the order the pots were created.
-//! - **Closed accounts** (`closed_on` set) are left out, pots and all.
+//! - **Closed accounts** (`closed_on` today or earlier) are left out, pots
+//!   and all. One closing on a later day is still open: it is listed and
+//!   counted until that day ([`AccountNode::closes_on`]), at its balance as
+//!   of today, so the £0 valuation closing wrote for that day doesn't count
+//!   yet.
 //! - **No balance**: an account other than a pot with no stated balance
 //!   (nothing entered, no balance from a file, no valuation) shows "No
 //!   balance" and is left out of net worth until one is entered: its sum
@@ -21,6 +26,8 @@
 //!   ([`Status::Mismatch`]).
 //!
 //! Nothing here reads transaction text.
+
+use chrono::NaiveDate;
 
 use crate::account::{Account, AccountKind};
 use crate::db::Reader;
@@ -66,6 +73,12 @@ pub struct AccountNode {
 }
 
 impl AccountNode {
+    /// The day it closes on, still to come: it leaves the tree that day.
+    /// `None` when it isn't closing (a closed one isn't in the tree).
+    pub fn closes_on(&self) -> Option<NaiveDate> {
+        self.account.closed_on
+    }
+
     /// Whether it shows a balance and counts toward net worth (module docs).
     pub fn has_balance(&self) -> bool {
         self.latest.is_some()
@@ -102,20 +115,20 @@ impl AccountNode {
     }
 }
 
-/// The open accounts with their pots, balances and check status, and net
-/// worth (module docs).
-pub fn account_tree(reader: &Reader) -> Result<AccountTree, Error> {
+/// The accounts open on `today`, with their pots, balances and check
+/// status, and net worth (module docs).
+pub fn account_tree(reader: &Reader, today: NaiveDate) -> Result<AccountTree, Error> {
     let open: Vec<Account> = balance::accounts(reader)?
         .into_iter()
-        .filter(|account| account.closed_on.is_none())
+        .filter(|account| account.closed_on.is_none_or(|closed| closed > today))
         .collect();
     let mut net_worth = Totals::new();
     let mut accounts = Vec::new();
     for account in open.iter().filter(|account| account.parent.is_none()) {
-        let mut node = node(reader, account.clone(), &mut net_worth)?;
+        let mut node = node(reader, account.clone(), today, &mut net_worth)?;
         for pot in open.iter().filter(|pot| pot.parent == Some(account.id)) {
             node.pots
-                .push(self::node(reader, pot.clone(), &mut net_worth)?);
+                .push(self::node(reader, pot.clone(), today, &mut net_worth)?);
         }
         accounts.push(node);
     }
@@ -126,10 +139,18 @@ pub fn account_tree(reader: &Reader) -> Result<AccountTree, Error> {
 }
 
 /// `account`'s node without its pots; adds its balance to `net_worth` when
-/// it counts.
-fn node(reader: &Reader, account: Account, net_worth: &mut Totals) -> Result<AccountNode, Error> {
-    let latest = balance::latest_balance(reader, &account)?
-        .filter(|latest| net_worth::counts(account.kind, latest.anchor != Anchor::Unanchored));
+/// it counts. One closing on a later day is taken as of `today`.
+fn node(
+    reader: &Reader,
+    account: Account,
+    today: NaiveDate,
+    net_worth: &mut Totals,
+) -> Result<AccountNode, Error> {
+    let latest = match account.closed_on {
+        Some(_) => balance::latest_balance_through(reader, &account, today)?,
+        None => balance::latest_balance(reader, &account)?,
+    }
+    .filter(|latest| net_worth::counts(account.kind, latest.anchor != Anchor::Unanchored));
     if let Some(latest) = latest {
         net_worth.add(net_worth::counted(&account, latest.balance)?)?;
     }

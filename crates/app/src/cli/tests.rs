@@ -887,3 +887,40 @@ fn import_uses_presets_saved_from_the_import_screen() {
     let batches = scratch.batches(1);
     assert_eq!(batches[0].preset_id.as_deref(), Some("uk-example"));
 }
+
+/// SLI-77: `orre accounts` puts a closing day still to come under CLOSES,
+/// and one that has come (today or earlier) under CLOSED.
+#[test]
+fn accounts_list_says_closes_until_the_closing_day() {
+    let scratch = Scratch::new();
+    scratch.ok(&[
+        "accounts",
+        "add",
+        "--name",
+        "QA Loan",
+        "--kind",
+        "liability",
+        "--currency",
+        "GBP",
+    ]);
+    scratch.ok(&["accounts", "close", "QA Loan", "--on", "2026-11-29"]);
+    let list = |today: &str| {
+        let today = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d").unwrap();
+        let mut out = Vec::new();
+        accounts::list_on(&scratch.open(), today, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(
+        list("2026-11-28"),
+        "ID  NAME     KIND       CURRENCY  INSTITUTION  PARENT  PRESET  LOCKED THROUGH  CLOSED  CLOSES\n\
+         1   QA Loan  liability  GBP       -            -       -       -               -       2026-11-29\n"
+    );
+    for today in ["2026-11-29", "2026-11-30"] {
+        assert_eq!(
+            list(today),
+            "ID  NAME     KIND       CURRENCY  INSTITUTION  PARENT  PRESET  LOCKED THROUGH  CLOSED\n\
+             1   QA Loan  liability  GBP       -            -       -       -               2026-11-29\n",
+            "on {today}"
+        );
+    }
+}

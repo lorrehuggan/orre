@@ -855,12 +855,12 @@ fn measure(database: &Path, only_live: bool) -> Result<()> {
     // Accounts view: AccountStore::load.
     time(&mut rows, "  account_tree alone", true, 7, || {
         let db = open(database)?;
-        account_tree(&db.reader()?)?;
+        account_tree(&db.reader()?, orre_core::schedule::local_today()?)?;
         Ok(())
     })?;
     time(&mut rows, "Accounts view load", true, 7, || {
         let db = open(database)?;
-        let tree = account_tree(&db.reader()?)?;
+        let tree = account_tree(&db.reader()?, orre_core::schedule::local_today()?)?;
         for node in tree.rows() {
             let id = node.account.id;
             let _ = import::batches(&db, id)?;

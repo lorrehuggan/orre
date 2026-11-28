@@ -102,6 +102,22 @@ pub fn latest_balance(reader: &Reader, account: &Account) -> Result<Option<Accou
     }
 }
 
+/// `account`'s balance at the end of its last active day on or before
+/// `through`: [`latest_balance`] as of that day, so a row dated later (the
+/// £0 valuation closing writes on a day still to come) isn't counted yet.
+/// `None` when it has nothing on or before `through`.
+pub fn latest_balance_through(
+    reader: &Reader,
+    account: &Account,
+    through: NaiveDate,
+) -> Result<Option<AccountBalance>, Error> {
+    let history = History::load(reader.conn(), account)?;
+    match history.last_day_through(through) {
+        Some(date) => history.at(date),
+        None => Ok(None),
+    }
+}
+
 /// An account's stated balances and daily movements.
 struct History {
     account: AccountId,
@@ -157,6 +173,20 @@ impl History {
     fn last_day(&self) -> Option<NaiveDate> {
         let stated = self.stated.keys().next_back().copied();
         let moved = self.movements.keys().next_back().copied();
+        stated.max(moved)
+    }
+
+    fn last_day_through(&self, through: NaiveDate) -> Option<NaiveDate> {
+        let stated = self
+            .stated
+            .range(..=through)
+            .next_back()
+            .map(|(&day, _)| day);
+        let moved = self
+            .movements
+            .range(..=through)
+            .next_back()
+            .map(|(&day, _)| day);
         stated.max(moved)
     }
 

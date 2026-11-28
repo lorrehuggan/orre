@@ -1322,10 +1322,10 @@ fn valued_snapshots(cx: &mut HeadlessAppContext, out: &Path) -> Result<()> {
             }
             let mut fixture = Accounts::fixture(data);
             if step == ValuedStep::Closed {
-                fixture = fixture.with_closed(orre_app::accounts::Closed {
-                    account: HOUSE,
-                    message: "House closed".into(),
-                });
+                let today = accounts_fixture::today();
+                fixture = fixture.with_closed(orre_app::accounts::Closed::new(
+                    HOUSE, "House", today, today,
+                ));
             }
             let accounts = cx.new(|_| fixture);
             let shell = cx.new(|cx| {

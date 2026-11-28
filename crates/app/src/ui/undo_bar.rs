@@ -3,6 +3,7 @@
 //! rows, a floating bar in the bulk-action bar's place says what changed and
 //! offers to undo it.
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, InteractiveElement as _, IntoElement, ParentElement as _,
     RenderOnce, SharedString, Styled as _, Window, div,
@@ -28,6 +29,9 @@ pub const UNDO: &str = "Undo";
 #[derive(IntoElement)]
 pub struct UndoBar {
     message: AnyElement,
+    /// Whether it shows "Undo"; a bar for a change that can't be undone
+    /// here says it alone.
+    undo: bool,
     on_undo: Option<ClickHandler>,
     on_dismiss: Option<ClickHandler>,
 }
@@ -44,6 +48,7 @@ impl UndoBar {
     pub fn rich(message: impl IntoElement) -> Self {
         Self {
             message: message.into_any_element(),
+            undo: true,
             on_undo: None,
             on_dismiss: None,
         }
@@ -55,6 +60,12 @@ impl UndoBar {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_undo = Some(Box::new(handler));
+        self
+    }
+
+    /// Leaves "Undo" out: the bar only says what changed.
+    pub fn without_undo(mut self) -> Self {
+        self.undo = false;
         self
     }
 
@@ -108,7 +119,7 @@ impl RenderOnce for UndoBar {
                     .text_color(color::TEXT)
                     .child(self.message),
             )
-            .child(undo)
+            .when(self.undo, |this| this.child(undo))
             .child(dismiss)
     }
 }

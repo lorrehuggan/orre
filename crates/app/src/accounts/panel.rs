@@ -6,7 +6,9 @@
 //!
 //! A row shows the account's latest balance: `danger` when an account that
 //! can be overdrawn is below zero, a 6px `danger` dot before it when a
-//! balance check failed, and "No balance" until one is entered. Clicking a
+//! balance check failed, and "No balance" until one is entered. An account
+//! closing on a later day says so after its name, "· closes 29 Nov" in
+//! `text-muted`, kept whole while the name truncates (SLI-77). Clicking a
 //! row selects the account, and clicking it again goes back to all
 //! accounts. The `+` opens New account. The panel is a Tab stop: there the
 //! arrow keys move the selection through the rows, in panel order, and
@@ -160,6 +162,13 @@ pub fn latest(node: &AccountNode) -> Option<(String, bool)> {
         .map(|latest| (money(latest.balance, Sign::Negative), node.is_overdrawn()))
 }
 
+/// What follows the name of an account closing on a later day (SLI-77):
+/// "· closes 29 Nov", the year only when it isn't this year's.
+pub fn closes(node: &AccountNode, today: chrono::NaiveDate) -> Option<String> {
+    node.closes_on()
+        .map(|on| format!("· closes {}", crate::format::list_date(on, today)))
+}
+
 /// Every account in the panel's order: accounts, each followed by its pots,
 /// then the assets and liabilities.
 pub fn order(data: &AccountsData) -> Vec<AccountId> {
@@ -267,7 +276,10 @@ fn account_row(
     let target = ContextTarget::Account(node.account.id);
     let open = state.context_menu().map(|menu| menu.target) == Some(target);
     let groups = context_menu::account_groups(state.data(), node.account.id);
-    let row = plain_account_row(node, nested, accounts, selected, ring, focus);
+    let mut row = plain_account_row(node, nested, accounts, selected, ring, focus);
+    if let Some(closes) = closes(node, state.data().today) {
+        row = row.label_tail(closes);
+    }
     with_context_menu(row, target, groups, open, accounts, focus)
 }
 

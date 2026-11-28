@@ -870,7 +870,7 @@ fn a_liability_stores_what_is_owed_below_zero(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn closing_an_asset_hides_it_and_undo_reopens_it(cx: &mut TestAppContext) {
+fn closing_an_asset_on_a_day_that_has_come_hides_it_at_once(cx: &mut TestAppContext) {
     let scratch = Scratch::new();
     let house = valued(&scratch, "House", AccountKind::Asset, 38_500_000);
     let (shell, accounts, cx) = open(cx, &scratch);
@@ -902,27 +902,103 @@ fn closing_an_asset_hides_it_and_undo_reopens_it(cx: &mut TestAppContext) {
         "it leaves the panel"
     );
     assert_eq!(selected(&accounts, cx), None);
+    // The day has come: the bar says so, with no Undo (SLI-77).
+    assert_eq!(
+        shown.undo_bar,
+        Some(("House closed".to_owned(), Vec::new()))
+    );
+    assert!(!shows("undo-change", cx));
+    assert!(shows("undo-dismiss", cx));
+}
+
+/// SLI-77: the panel and its net worth are as of today. A liability paid
+/// off tomorrow stays, counted, with "· closes {day}" after its name, and
+/// the bar's Undo reopens it; on the day itself it leaves.
+#[gpui_kit::test]
+fn closing_on_a_later_day_keeps_the_account_until_then(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let loan = valued(&scratch, "QA Loan", AccountKind::Liability, -500_000);
+    let (shell, accounts, cx) = open(cx, &scratch);
+    let today = crate::today();
+    let tomorrow = today.succ_opt().unwrap();
+    let day = crate::format::list_date(tomorrow, today);
+    let before = describe(&shell, &accounts, cx).net_worth;
+    assert_eq!(before, ["−£4,900.00"]);
+
+    let close = |cx: &mut VisualTestContext| {
+        click(&row(loan), cx);
+        click("close-account", cx);
+        retype_date(
+            "close-account-date",
+            &crate::format::field_date(tomorrow),
+            cx,
+        );
+        click("close-account-close", cx);
+    };
+    close(cx);
+    assert_eq!(
+        account::get(&scratch.db(), loan).unwrap().closed_on,
+        Some(tomorrow)
+    );
+    let shown = describe(&shell, &accounts, cx);
+    assert_eq!(shown.dialog, None, "the dialog closes");
+    let row_of = |shown: &AccountsDescription| {
+        rows(shown)
+            .into_iter()
+            .find(|row| row.name == "QA Loan")
+            .cloned()
+    };
+    let shown_row = row_of(&shown).expect("it stays in the panel");
+    assert_eq!(shown_row.balance, "−£5,000.00", "at what's owed today");
+    assert_eq!(shown_row.closes, Some(format!("· closes {day}")));
+    assert_eq!(shown.net_worth, before, "still counted");
     assert_eq!(
         shown.undo_bar,
         Some((
-            "House closed".to_owned(),
+            format!("QA Loan closes on {}", crate::format::field_date(tomorrow)),
             vec![Action::button("Undo", true)]
         ))
     );
+    // It can't close again; the context menu agrees.
+    if let Some(inspector) = &shown.inspector {
+        assert!(
+            !inspector
+                .sections
+                .iter()
+                .any(|section| labels(&section.actions).contains(&"Close account…")),
+            "no Close account… while it closes"
+        );
+    }
+    assert!(!shows("close-account", cx));
 
     // Undo reopens it, without the £0 value closing added.
     click("undo-change", cx);
-    assert_eq!(account::get(&scratch.db(), house).unwrap().closed_on, None);
+    assert_eq!(account::get(&scratch.db(), loan).unwrap().closed_on, None);
     assert_eq!(
-        account::entered_balances(&scratch.db(), house)
+        account::entered_balances(&scratch.db(), loan)
             .unwrap()
             .len(),
         1
     );
     let shown = describe(&shell, &accounts, cx);
-    assert_eq!(selected_row(&shown).map(|(name, _)| name), Some("House"));
+    assert_eq!(row_of(&shown).unwrap().closes, None);
     assert_eq!(shown.undo_bar, None);
-    assert!(!shows("undo-change", cx));
+
+    // Closed again: on the day itself (the shell's clock tick passes the
+    // new date), it leaves the panel and net worth rises by what was owed.
+    close(cx);
+    accounts.update(cx, |accounts, cx| accounts.follow_day(today, cx));
+    redraw(cx);
+    assert!(
+        row_of(&describe(&shell, &accounts, cx)).is_some(),
+        "same day: no read"
+    );
+    accounts.update(cx, |accounts, cx| accounts.follow_day(tomorrow, cx));
+    redraw(cx);
+    let shown = describe(&shell, &accounts, cx);
+    assert_eq!(row_of(&shown), None, "it leaves on its closing day");
+    assert_eq!(shown.net_worth, ["£100.00"]);
+    assert_eq!(selected(&accounts, cx), None);
 }
 
 #[gpui_kit::test]
@@ -1220,6 +1296,7 @@ fn the_sample_accounts_are_described_in_full(cx: &mut TestAppContext) {
         balance: balance.to_owned(),
         overdrawn,
         nested,
+        closes: None,
         flagged,
         selected,
         cursor: false,
@@ -2130,4 +2207,102 @@ fn a_stored_amount_beyond_the_cap_shows_an_error_under_accounts(cx: &mut TestApp
         ),
         "{error}"
     );
+}
+
+/// SLI-77: a close bar left showing until the closing day turns into
+/// "QA Loan closed", without Undo; a day before that changes nothing, and a
+/// dismissed bar stays dismissed.
+#[gpui_kit::test]
+fn the_close_bar_turns_into_closed_when_the_day_comes(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let loan = valued(&scratch, "QA Loan", AccountKind::Liability, -500_000);
+    let (shell, accounts, cx) = open(cx, &scratch);
+    let today = crate::today();
+    let tomorrow = today.succ_opt().unwrap();
+    let close = |account: AccountId, cx: &mut VisualTestContext| {
+        click(&row(account), cx);
+        click("close-account", cx);
+        retype_date(
+            "close-account-date",
+            &crate::format::field_date(tomorrow),
+            cx,
+        );
+        click("close-account-close", cx);
+    };
+    close(loan, cx);
+    let closes_on = format!("QA Loan closes on {}", crate::format::field_date(tomorrow));
+    let undo = vec![Action::button("Undo", true)];
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some((closes_on.clone(), undo.clone()))
+    );
+
+    // The same day again: nothing changes.
+    accounts.update(cx, |accounts, cx| accounts.follow_day(today, cx));
+    redraw(cx);
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some((closes_on, undo))
+    );
+
+    // The closing day: "QA Loan closed", and no Undo.
+    accounts.update(cx, |accounts, cx| accounts.follow_day(tomorrow, cx));
+    redraw(cx);
+    let shown = describe(&shell, &accounts, cx);
+    assert_eq!(
+        shown.undo_bar,
+        Some(("QA Loan closed".to_owned(), Vec::new()))
+    );
+    assert!(!shows("undo-change", cx));
+    assert!(shows("undo-dismiss", cx));
+    // Undo, asked for anyway, does nothing.
+    accounts.update(cx, |accounts, cx| accounts.undo_notice(cx));
+    redraw(cx);
+    assert_eq!(
+        account::get(&scratch.db(), loan).unwrap().closed_on,
+        Some(tomorrow)
+    );
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some(("QA Loan closed".to_owned(), Vec::new()))
+    );
+
+    // A bar dismissed before the day stays dismissed.
+    click("undo-dismiss", cx);
+    accounts.update(cx, |accounts, cx| accounts.follow_day(today, cx));
+    redraw(cx);
+    close(scratch.current, cx);
+    assert!(describe(&shell, &accounts, cx).undo_bar.is_some());
+    click("undo-dismiss", cx);
+    accounts.update(cx, |accounts, cx| accounts.follow_day(tomorrow, cx));
+    redraw(cx);
+    assert_eq!(describe(&shell, &accounts, cx).undo_bar, None);
+}
+
+#[test]
+fn the_close_bar_always_says_the_year() {
+    let id = AccountId::new(7);
+    let on = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    let today = on(2026, 11, 28);
+    let closed = Closed::new(id, "QA Loan", on(2026, 11, 29), today);
+    assert_eq!(closed.message, "QA Loan closes on 29 Nov 2026");
+    assert!(closed.undoable);
+    let next_year = Closed::new(id, "QA Loan", on(2027, 1, 4), today);
+    assert_eq!(next_year.message, "QA Loan closes on 4 Jan 2027");
+    // Today or earlier: closed, no Undo.
+    for day in [today, on(2026, 11, 2)] {
+        let closed = Closed::new(id, "QA Loan", day, today);
+        assert_eq!(
+            (closed.message.as_ref(), closed.undoable),
+            ("QA Loan closed", false)
+        );
+    }
+    // Read again on a later day.
+    assert_eq!(closed.on_day(on(2026, 11, 28)), closed);
+    let swapped = closed.on_day(on(2026, 11, 29));
+    assert_eq!(
+        (swapped.message.as_ref(), swapped.undoable),
+        ("QA Loan closed", false)
+    );
+    assert_eq!(swapped.account, id);
 }

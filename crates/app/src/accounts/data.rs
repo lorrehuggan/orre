@@ -3,10 +3,10 @@
 //! inspector lists. Plain data, read in one go by [`super::store`] or built
 //! by `super::fixture`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDate;
-use orre_core::account::{Deletion, StoredBalance, Usage};
+use orre_core::account::{Account, Deletion, StoredBalance, Usage};
 use orre_core::id::AccountId;
 use orre_core::import::BatchInfo;
 use orre_core::money::Money;
@@ -49,6 +49,24 @@ pub struct AccountsData {
     pub presets: Vec<PresetChoice>,
     /// The day the data was read, which decides how dates are written.
     pub today: NaiveDate,
+    /// Every name, exactly as stored, that more than one account has, open
+    /// or closed, pots included: `orre accounts reopen` can't tell them
+    /// apart by name ([`shared_names`]).
+    pub shared_names: BTreeSet<String>,
+}
+
+/// The names more than one of `accounts` has, compared as `orre accounts
+/// reopen` compares them (`cli::accounts::find`): exactly, case and spaces
+/// included.
+pub fn shared_names(accounts: &[Account]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut shared = BTreeSet::new();
+    for account in accounts {
+        if !seen.insert(account.name.as_str()) {
+            shared.insert(account.name.clone());
+        }
+    }
+    shared
 }
 
 impl AccountsData {
@@ -62,6 +80,7 @@ impl AccountsData {
             details: BTreeMap::new(),
             presets,
             today,
+            shared_names: BTreeSet::new(),
         }
     }
 

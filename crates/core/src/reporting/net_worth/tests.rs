@@ -204,7 +204,11 @@ fn history_and_the_accounts_panel_agree_on_net_worth() {
     ledger.row(euros, "2026-10-06", 5_000, None);
 
     let check = |ledger: &TestLedger| {
-        let tree = crate::reporting::account_tree::account_tree(&ledger.reader()).unwrap();
+        let tree = crate::reporting::account_tree::account_tree(
+            &ledger.reader(),
+            crate::reporting::test_ledger::date("2026-11-28"),
+        )
+        .unwrap();
         let history =
             net_worth_history(&ledger.reader(), period("2026-10"), period("2026-10")).unwrap();
         assert_eq!(history.items[0].total, tree.net_worth);
