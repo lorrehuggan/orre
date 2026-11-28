@@ -13,9 +13,10 @@
 //! Drawn for an asset ("Sold on"). Composed for M3.17 (decided with the
 //! user, 2026-11-14): a liability's day is "Paid off on" and net worth rises
 //! by what was owed; a bank, cash or pot account's is "Closed on", its
-//! balance leaves net worth after the day, and its open pots close with it.
-//! The day starts at today, or at the earliest day it can close if that's
-//! later. The body follows the day as it's typed.
+//! balance leaves net worth from the day (SLI-77: on it, as the panel is
+//! as of today), and its open pots close with it. The day starts at today,
+//! or at the earliest day it can close if that's later. The body follows
+//! the day as it's typed, always with its year ("29 Nov 2026").
 
 use chrono::NaiveDate;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -28,7 +29,7 @@ use orre_core::account::AccountKind;
 use orre_core::id::AccountId;
 use orre_core::money::Money;
 
-use crate::format::{Sign, currency_prefix, field_date, list_date, money, parse_date};
+use crate::format::{Sign, currency_prefix, field_date, money, parse_date};
 use crate::theme::tokens::{color, spacing};
 use crate::ui::button::{Button, ButtonVariant};
 use crate::ui::dialog::Dialog;
@@ -77,10 +78,13 @@ impl CloseFacts {
         }
     }
 
-    /// The body for closing on `on` (`None`: a day that doesn't read).
-    pub fn body(&self, on: Option<NaiveDate>, today: NaiveDate) -> String {
+    /// The body for closing on `on` (`None`: a day that doesn't read). The
+    /// day always has its year ("29 Nov 2026"), and every kind leaves from
+    /// it: the panel is as of today, so the account leaves on that day
+    /// (SLI-77).
+    pub fn body(&self, on: Option<NaiveDate>) -> String {
         let name = &self.name;
-        let day = on.map_or_else(|| "that day".to_owned(), |on| list_date(on, today));
+        let day = on.map_or_else(|| "that day".to_owned(), field_date);
         let amount =
             |balance: Money| money(balance.checked_abs().unwrap_or(balance), Sign::Negative);
         match (self.kind, self.balance) {
@@ -99,7 +103,7 @@ impl CloseFacts {
             ),
             (_, balance) => {
                 let mut body = format!(
-                    "{name} leaves the Accounts panel and net worth after {day}. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it."
+                    "{name} leaves the Accounts panel and net worth from {day}. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it."
                 );
                 if let Some(balance) = balance.filter(|balance| !balance.is_zero()) {
                     body.push_str(&format!(
@@ -205,7 +209,7 @@ impl CloseAccountDialog {
         match &self.facts {
             Some(facts) => (
                 format!("Close {}?", facts.name),
-                facts.body(self.typed(cx), self.today),
+                facts.body(self.typed(cx)),
                 facts.day_label(),
             ),
             None => ("Close account?".to_owned(), String::new(), "Closed on"),
@@ -317,8 +321,8 @@ mod tests {
     #[test]
     fn the_asset_body_is_paper_s() {
         assert_eq!(
-            facts(AccountKind::Asset, 38_500_000, &[]).body(Some(day(11, 6)), day(11, 14)),
-            "House leaves the Accounts panel and counts as £0 from 6 Nov, so net worth drops by £385,000.00 from then (the sale money arrives in your bank account). Its valuations stay, so earlier net worth doesn't change. You can reopen it."
+            facts(AccountKind::Asset, 38_500_000, &[]).body(Some(day(11, 6))),
+            "House leaves the Accounts panel and counts as £0 from 6 Nov 2026, so net worth drops by £385,000.00 from then (the sale money arrives in your bank account). Its valuations stay, so earlier net worth doesn't change. You can reopen it."
         );
         assert_eq!(facts(AccountKind::Asset, 1, &[]).day_label(), "Sold on");
         assert_eq!(
@@ -331,21 +335,41 @@ mod tests {
     fn a_bank_account_names_its_balance_and_pots() {
         let mut savings = facts(AccountKind::Current, 128_410, &["Holiday", "Rainy day"]);
         savings.name = "Current account".into();
-        let body = savings.body(Some(day(11, 9)), day(11, 14));
-        assert!(
-            body.starts_with(
-                "Current account leaves the Accounts panel and net worth after 9 Nov."
-            )
+        // SLI-77: the bank sentence says "from" the close day itself, with
+        // its year even in the current year, as the liability's does.
+        assert_eq!(
+            savings.body(Some(day(11, 29))),
+            "Current account leaves the Accounts panel and net worth from 29 Nov 2026. Its transactions, balances and imports stay, so earlier net worth doesn't change. You can reopen it. Its balance, £1,284.10, leaves net worth with it. Its pots, Holiday and Rainy day, close with it."
         );
-        assert!(body.contains("Its balance, £1,284.10, leaves net worth with it."));
-        assert!(body.ends_with("Its pots, Holiday and Rainy day, close with it."));
         assert_eq!(savings.day_label(), "Closed on");
         assert_eq!(list(&["A".into(), "B".into(), "C".into()]), "A, B and C");
         let mortgage = facts(AccountKind::Liability, -21_264_000, &[]);
         assert!(
             mortgage
-                .body(None, day(11, 14))
-                .contains("net worth rises by £212,640.00 from then")
+                .body(None)
+                .contains("from that day, so net worth rises by £212,640.00 from then")
+        );
+    }
+
+    /// SLI-77: the liability sentence QA saw, with the year even in the
+    /// current year, and a day in another year.
+    #[test]
+    fn the_liability_body_has_the_year() {
+        let mut loan = facts(AccountKind::Liability, -500_000, &[]);
+        loan.name = "QA Loan".into();
+        assert_eq!(
+            loan.body(Some(day(11, 29))),
+            "QA Loan leaves the Accounts panel and counts as £0 from 29 Nov 2026, so net worth rises by £5,000.00 from then. Its balances stay, so earlier net worth doesn't change. You can reopen it."
+        );
+        assert!(
+            loan.body(NaiveDate::from_ymd_opt(2027, 1, 4))
+                .contains("counts as £0 from 4 Jan 2027, so")
+        );
+        let mut empty = facts(AccountKind::Asset, 0, &[]);
+        empty.name = "Car".into();
+        assert_eq!(
+            empty.body(Some(day(11, 29))),
+            "Car leaves the Accounts panel and counts as nothing from 29 Nov 2026. Its values stay, so earlier net worth doesn't change. You can reopen it."
         );
     }
 }

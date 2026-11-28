@@ -955,7 +955,7 @@ fn closing_on_a_later_day_keeps_the_account_until_then(cx: &mut TestAppContext) 
     assert_eq!(
         shown.undo_bar,
         Some((
-            format!("QA Loan closes on {day}"),
+            format!("QA Loan closes on {}", crate::format::field_date(tomorrow)),
             vec![Action::button("Undo", true)]
         ))
     );
@@ -2207,4 +2207,102 @@ fn a_stored_amount_beyond_the_cap_shows_an_error_under_accounts(cx: &mut TestApp
         ),
         "{error}"
     );
+}
+
+/// SLI-77: a close bar left showing until the closing day turns into
+/// "QA Loan closed", without Undo; a day before that changes nothing, and a
+/// dismissed bar stays dismissed.
+#[gpui_kit::test]
+fn the_close_bar_turns_into_closed_when_the_day_comes(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let loan = valued(&scratch, "QA Loan", AccountKind::Liability, -500_000);
+    let (shell, accounts, cx) = open(cx, &scratch);
+    let today = crate::today();
+    let tomorrow = today.succ_opt().unwrap();
+    let close = |account: AccountId, cx: &mut VisualTestContext| {
+        click(&row(account), cx);
+        click("close-account", cx);
+        retype_date(
+            "close-account-date",
+            &crate::format::field_date(tomorrow),
+            cx,
+        );
+        click("close-account-close", cx);
+    };
+    close(loan, cx);
+    let closes_on = format!("QA Loan closes on {}", crate::format::field_date(tomorrow));
+    let undo = vec![Action::button("Undo", true)];
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some((closes_on.clone(), undo.clone()))
+    );
+
+    // The same day again: nothing changes.
+    accounts.update(cx, |accounts, cx| accounts.follow_day(today, cx));
+    redraw(cx);
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some((closes_on, undo))
+    );
+
+    // The closing day: "QA Loan closed", and no Undo.
+    accounts.update(cx, |accounts, cx| accounts.follow_day(tomorrow, cx));
+    redraw(cx);
+    let shown = describe(&shell, &accounts, cx);
+    assert_eq!(
+        shown.undo_bar,
+        Some(("QA Loan closed".to_owned(), Vec::new()))
+    );
+    assert!(!shows("undo-change", cx));
+    assert!(shows("undo-dismiss", cx));
+    // Undo, asked for anyway, does nothing.
+    accounts.update(cx, |accounts, cx| accounts.undo_notice(cx));
+    redraw(cx);
+    assert_eq!(
+        account::get(&scratch.db(), loan).unwrap().closed_on,
+        Some(tomorrow)
+    );
+    assert_eq!(
+        describe(&shell, &accounts, cx).undo_bar,
+        Some(("QA Loan closed".to_owned(), Vec::new()))
+    );
+
+    // A bar dismissed before the day stays dismissed.
+    click("undo-dismiss", cx);
+    accounts.update(cx, |accounts, cx| accounts.follow_day(today, cx));
+    redraw(cx);
+    close(scratch.current, cx);
+    assert!(describe(&shell, &accounts, cx).undo_bar.is_some());
+    click("undo-dismiss", cx);
+    accounts.update(cx, |accounts, cx| accounts.follow_day(tomorrow, cx));
+    redraw(cx);
+    assert_eq!(describe(&shell, &accounts, cx).undo_bar, None);
+}
+
+#[test]
+fn the_close_bar_always_says_the_year() {
+    let id = AccountId::new(7);
+    let on = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    let today = on(2026, 11, 28);
+    let closed = Closed::new(id, "QA Loan", on(2026, 11, 29), today);
+    assert_eq!(closed.message, "QA Loan closes on 29 Nov 2026");
+    assert!(closed.undoable);
+    let next_year = Closed::new(id, "QA Loan", on(2027, 1, 4), today);
+    assert_eq!(next_year.message, "QA Loan closes on 4 Jan 2027");
+    // Today or earlier: closed, no Undo.
+    for day in [today, on(2026, 11, 2)] {
+        let closed = Closed::new(id, "QA Loan", day, today);
+        assert_eq!(
+            (closed.message.as_ref(), closed.undoable),
+            ("QA Loan closed", false)
+        );
+    }
+    // Read again on a later day.
+    assert_eq!(closed.on_day(on(2026, 11, 28)), closed);
+    let swapped = closed.on_day(on(2026, 11, 29));
+    assert_eq!(
+        (swapped.message.as_ref(), swapped.undoable),
+        ("QA Loan closed", false)
+    );
+    assert_eq!(swapped.account, id);
 }

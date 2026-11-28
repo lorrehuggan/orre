@@ -18,9 +18,10 @@
 //! After closing, the undo bar says so ([`notice_layer`]). The panel is as
 //! of today (SLI-77): an account closing on a later day stays in it, and in
 //! net worth, with "· closes 29 Nov" after its name, until that day; the
-//! bar says "QA Loan closes on 29 Nov" and its Undo reopens the account.
-//! Closed today or earlier, the account leaves at once and the bar says
-//! "QA Loan closed", with no Undo. A closed account is reopened later with
+//! bar says "QA Loan closes on 29 Nov 2026" and its Undo reopens the
+//! account. Closed today or earlier, the account leaves at once and the bar
+//! says "QA Loan closed", with no Undo; a bar still showing when the day
+//! comes turns into that ([`Accounts::follow_day`]). A closed account is reopened later with
 //! `orre accounts reopen` (decided with the user, 2026-11-14). The shell's
 //! clock tick calls [`Accounts::follow_day`], so on the closing day, from
 //! local midnight, the accounts read again and the account leaves.
@@ -205,7 +206,12 @@ pub struct DialogClosed;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Closed {
     pub account: AccountId,
-    /// "House closes on 29 Nov", or "House closed" for today or earlier.
+    /// Its name as shown, for the message on a later day.
+    name: String,
+    /// The day it closes on.
+    on: NaiveDate,
+    /// "House closes on 29 Nov 2026", or "House closed" once that day has
+    /// come.
     pub message: SharedString,
     /// Whether the bar offers Undo: only while the closing day is still to
     /// come.
@@ -214,18 +220,27 @@ pub struct Closed {
 
 impl Closed {
     /// What the bar says after `name` is closed on `on`, read on `today`.
+    /// The day always has its year (SLI-77).
     pub fn new(account: AccountId, name: &str, on: NaiveDate, today: NaiveDate) -> Self {
         let undoable = on > today;
         let message = if undoable {
-            format!("{name} closes on {}", crate::format::list_date(on, today))
+            format!("{name} closes on {}", crate::format::field_date(on))
         } else {
             format!("{name} closed")
         };
         Self {
             account,
+            name: name.to_owned(),
+            on,
             message: message.into(),
             undoable,
         }
+    }
+
+    /// The same bar read on `today`: "House closed", without Undo, once
+    /// the closing day has come.
+    pub fn on_day(&self, today: NaiveDate) -> Self {
+        Self::new(self.account, &self.name, self.on, today)
     }
 }
 
@@ -603,8 +618,20 @@ impl Accounts {
     /// The shell's clock tick: when `today` isn't the day the accounts were
     /// read on, reads them again, so an account whose closing day has come
     /// leaves the panel and net worth (from local midnight, within the
-    /// tick). Sample data keeps its day.
+    /// tick). Sample data keeps its day. A close bar still showing for that
+    /// account turns into "House closed", without Undo (SLI-77); a
+    /// dismissed one stays dismissed, and a removed-balance bar is left as
+    /// it is.
     pub fn follow_day(&mut self, today: NaiveDate, cx: &mut Context<Self>) {
+        if let Some(closed) = self
+            .closed
+            .as_ref()
+            .filter(|closed| closed.undoable && closed.on <= today)
+        {
+            self.closed = Some(closed.on_day(today));
+            self.closed_error = None;
+            cx.notify();
+        }
         if self.loaded
             && self.loading.is_none()
             && today != self.data.today
@@ -951,7 +978,7 @@ impl Accounts {
 }
 
 /// The undo bar after closing an account, centred over the foot of the
-/// window's body like the import notification: "House closes on 29 Nov"
+/// window's body like the import notification: "House closes on 29 Nov 2026"
 /// and Undo, which reopens it, or "House closed" alone for a day that has
 /// come. `None` when no account was just closed.
 pub fn notice_layer(

@@ -115,8 +115,10 @@ manual rows, exclusions, change batches, the pot mirror) are in that record and 
 - **Reopening** (`account::reopen`) clears `closed_on` on the account and on the pots
   closed the same day, and deletes the £0 valuation on the closing day. A pot whose
   parent is closed can't reopen alone (`ParentClosed`). The app offers it on the undo
-  bar after closing, while the closing day is still to come; later only `orre accounts
-  reopen`. There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
+  bar after closing ("QA Loan closes on 29 Nov 2026", Undo), while the closing day is
+  still to come; when that day comes the bar, if still open, turns into "QA Loan closed"
+  without Undo. Later only `orre accounts reopen`. The bar and the Close dialog's body
+  always write the day with its year; the dialog says every kind leaves "from" it. There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
   column, and a CLOSES column for a closing day still to come.
 - **Deleting** (`account::delete`; `account::deletion` counts what goes) is for an
   account added by mistake: refused (`Undeletable(DeleteLock)`) while it has
