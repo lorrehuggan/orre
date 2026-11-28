@@ -102,9 +102,12 @@ Things to know:
   ```
 
 Before restoring, Orre checks the backup is intact and that this version of Orre can
-read it. It then **backs up your current database first**, so a restore can itself be
-undone by restoring that backup. If the current database can't be backed up, nothing is
-restored.
+read it. It also shows what the restore will undo: the imports, edits and Inbox
+suggestions since the backup, the transactions you've added by hand since (they're
+removed) and the hand-added ones you've deleted since (they come back). Other changes,
+such as to rules, accounts or settings, are undone too but not counted. It then **backs
+up your current database first**, so a restore can itself be undone by restoring that
+backup. If the current database can't be backed up, nothing is restored.
 
 If an AI client is connected while you restore, see
 [Restoring a backup while a client is connected](mcp-setup.md#restoring-a-backup-while-a-client-is-connected).

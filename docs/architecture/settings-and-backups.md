@@ -265,6 +265,35 @@ the build. Everything else follows `DESIGN.md` → "Settings" or the records abo
    rotation: an automatic backup outside the 10 most recent automatic ones is a month's.
    *Changed 2026-11-19 (R.12):* the Backups screen also shows the total size and has
    Delete backup… ("Decision record: backup retention and presets").
+   *Changed 2026-11-28 (SLI-41, SLI-57):* it also counts transactions added by hand
+   since the backup (restoring deletes them) and hand-added transactions the backup
+   holds but the current database doesn't (deleted since; restoring brings them back). A
+   deletion is recorded nowhere else (`manual::delete` writes no change batch), so
+   `backup::detail::since` reads the backup itself, opened as above with
+   `trusted_schema` off: the ID and `created_at` of its `origin = 'manual'` rows, never
+   their text, each looked up in the current database. Neither column ever changes, and
+   IDs are `AUTOINCREMENT`; `created_at` tells a deleted row apart from a newer row that
+   got the same ID after a restore set the sequence back. A file without a
+   `"transaction"` table holding those columns (a view in its place included) has
+   nothing to bring back. The backup may be hostile, so the count stops past
+   `detail::DELETED_CAP` (10,000) and says "at least 10,000"; it reads at most the
+   current database's manual rows plus 10,001 backup rows. Only a plain table is read: a
+   virtual table named `transaction` (SQLite lists one as a table, and its module can
+   produce rows without end) counts as nothing to bring back, unread. The backup's
+   connection also carries a progress-handler budget (`detail::DELETED_BUDGET`, 10,000
+   ticks of 1,000 SQLite instructions, about 76 times what a backup with 10,000
+   deletions needs); when it runs out the query is interrupted and the count is unknown
+   ("Deleted · couldn't count", "the deletion of an unknown number of transactions"),
+   while the rest of the list and the restore go on as before. Only `created_at` values
+   as Orre writes them are read (24 bytes, the format the column's CHECK allows), so an
+   oversized or misformatted one is dropped unread, and an error reading the backup for
+   this count (it can't be opened, or isn't a database) makes it unknown too rather than
+   failing the other counts. Schema parsing isn't counted against the budget, so the app
+   reads all of "Since this backup" on a background thread: the inspector and the
+   Restore dialog show at once, and the lines appear when the read lands; a read for a
+   backup no longer selected, or for a closed dialog, is dropped. `orre restore` counts
+   in line and prints the dialog's sentence. Changes to rules, accounts, settings and
+   single transactions are still undone without being counted (SLI-52).
 6. **Restore in the app is the CLI's, with its checks shown one by one.**
    `backup::detail::assess` runs `backup::check` and sorts its answer into "the file is
    intact" (integrity) and "this version can read it" (history, schema); the dialog

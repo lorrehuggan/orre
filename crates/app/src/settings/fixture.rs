@@ -387,6 +387,9 @@ pub fn since() -> Since {
         }],
         edits: 4,
         manual: 0,
+        deleted: 0,
+        deleted_at_least: false,
+        deleted_unknown: false,
         suggestions: 12,
     }
 }

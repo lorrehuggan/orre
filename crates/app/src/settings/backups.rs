@@ -210,7 +210,7 @@ pub fn since_lines(since: &Since) -> Vec<(Vec<table::Run>, String)> {
     }
     if since.manual > 0 {
         lines.push((
-            vec![plain("Added by you")],
+            vec![plain("Added")],
             format!(
                 "{} {}",
                 count(since.manual),
@@ -218,10 +218,32 @@ pub fn since_lines(since: &Since) -> Vec<(Vec<table::Run>, String)> {
             ),
         ));
     }
+    if since.deleted_unknown {
+        lines.push((vec![plain("Deleted")], "couldn't count".to_owned()));
+    } else if since.deleted > 0 {
+        lines.push((
+            vec![plain("Deleted")],
+            format!(
+                "{}{} {}",
+                at_least(since),
+                count(since.deleted),
+                plural(since.deleted, "transaction")
+            ),
+        ));
+    }
     if since.suggestions > 0 {
         lines.push((vec![plain("Inbox suggestions")], count(since.suggestions)));
     }
     lines
+}
+
+/// "at least " when counting deletions stopped at its cap.
+pub(super) fn at_least(since: &Since) -> &'static str {
+    if since.deleted_at_least {
+        "at least "
+    } else {
+        ""
+    }
 }
 
 /// Whether this version can restore the backup.

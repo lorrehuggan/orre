@@ -311,6 +311,46 @@ fn restore_without_yes_only_checks() {
     assert_eq!(scratch.backups(), [backup]);
 }
 
+/// SLI-57: the preview says what restoring undoes, a transaction deleted
+/// by hand since the backup included, and restoring brings it back.
+#[test]
+fn restore_says_a_transaction_deleted_by_hand_comes_back() {
+    use orre_core::manual::{self, ManualTransaction};
+    use orre_core::money::{Currency, Money};
+
+    let scratch = Scratch::with_account();
+    let mut db = Database::open(&scratch.db).unwrap();
+    let monzo = account::list(&db).unwrap()[0].id;
+    let entry = ManualTransaction::new(
+        monzo,
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+        Money::new(-1250, Currency::GBP),
+        "QA Pre Backup",
+    );
+    let gone = manual::create(&mut db, &entry).unwrap();
+    drop(db);
+    let out = scratch.ok(&["backup"]);
+    assert!(out.starts_with("Backed up"), "{out}");
+    let backup = scratch.backups().remove(0);
+    let preview = scratch.ok(&["restore", backup.path.to_str().unwrap()]);
+    assert!(!preview.contains("Restoring undoes"), "{preview}");
+
+    let mut db = Database::open(&scratch.db).unwrap();
+    manual::delete(&mut db, gone).unwrap();
+    assert!(manual::get(&db, gone).is_err());
+    drop(db);
+    let preview = scratch.ok(&["restore", backup.path.to_str().unwrap()]);
+    assert!(
+        preview
+            .contains("\nRestoring undoes everything since then: the deletion of 1 transaction.\n"),
+        "{preview}"
+    );
+
+    scratch.ok(&["restore", backup.path.to_str().unwrap(), "--yes"]);
+    let db = Database::open(&scratch.db).unwrap();
+    assert_eq!(manual::get(&db, gone).unwrap().description, "QA Pre Backup");
+}
+
 #[test]
 fn restore_with_yes_restores_by_file_name() {
     let scratch = Scratch::with_account();

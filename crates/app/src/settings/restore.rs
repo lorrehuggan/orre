@@ -71,13 +71,17 @@ pub struct RestoreDialog {
     settings: Entity<SettingsView>,
     target: RestoreTarget,
     stage: Stage,
-    /// What restoring undoes, when the backup's time is known.
+    /// What restoring undoes, when the backup's time is known and the
+    /// count, read in the background, has landed.
     since: Option<Since>,
     today: chrono::NaiveDate,
     /// Why the last restore was refused.
     error: Option<SharedString>,
     focus: FocusHandle,
     _task: Option<Task<()>>,
+    /// Reading `since` in the background: it reads the backup, which may be
+    /// large or hostile, so the dialog doesn't wait for it.
+    _since_read: Option<Task<()>>,
 }
 
 impl EventEmitter<DialogClosed> for RestoreDialog {}
@@ -95,22 +99,22 @@ impl RestoreDialog {
             let view = settings.read(cx);
             (view.store().ok().cloned(), view.clock().today)
         };
-        let since = match (&store, target.taken_at) {
-            (Some(store), Some(taken_at)) => store.since(taken_at).ok(),
-            _ => None,
-        };
         let mut dialog = Self {
             settings,
             target,
             stage: Stage::Checking,
-            since,
+            since: None,
             today,
             error: None,
             focus,
             _task: None,
+            _since_read: None,
         };
         match store {
-            Some(store) => dialog.check(store, cx),
+            Some(store) => {
+                dialog.read_since(store.clone(), cx);
+                dialog.check(store, cx);
+            }
             None => {
                 dialog.stage =
                     Stage::Unreadable("This is sample data, which can't be changed.".into())
@@ -137,11 +141,38 @@ impl RestoreDialog {
             error: None,
             focus: cx.focus_handle(),
             _task: None,
+            _since_read: None,
         }
     }
 
     pub fn stage(&self) -> &Stage {
         &self.stage
+    }
+
+    /// What restoring undoes, once its background read has landed.
+    #[cfg(test)]
+    pub(crate) fn since(&self) -> Option<&Since> {
+        self.since.as_ref()
+    }
+
+    /// Reads what restoring undoes on a background thread, beside the
+    /// checks; the sentence shows once it lands (and the checks passed). A
+    /// dialog closed before then drops the read with it.
+    fn read_since(&mut self, store: SettingsStore, cx: &mut Context<Self>) {
+        let Some(taken_at) = self.target.taken_at else {
+            return;
+        };
+        let path = self.target.path.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { store.since(&path, taken_at).ok() });
+        self._since_read = Some(cx.spawn(async move |this, cx| {
+            let since = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.since = since;
+                cx.notify();
+            });
+        }));
     }
 
     fn check(&mut self, store: SettingsStore, cx: &mut Context<Self>) {
@@ -297,8 +328,8 @@ fn check_row(passed: bool, finding: &str, name: Vec<Run>) -> AnyElement {
 }
 
 /// "the import of `monzo-november.csv` (296 rows), 4 edits and 12 Inbox
-/// suggestions" (Paper `H6T-0`).
-fn undoes(since: &Since) -> Vec<Run> {
+/// suggestions" (Paper `H6T-0`); `orre restore` prints it too.
+pub(crate) fn undoes(since: &Since) -> Vec<Run> {
     let mut parts: Vec<Vec<Run>> = Vec::new();
     for import in &since.imports {
         parts.push(vec![
@@ -322,6 +353,20 @@ fn undoes(since: &Since) -> Vec<Run> {
                 " {} added by you",
                 plural(since.manual, "transaction")
             )),
+        ]);
+    }
+    if since.deleted_unknown {
+        parts.push(vec![plain(
+            "the deletion of an unknown number of transactions",
+        )]);
+    } else if since.deleted > 0 {
+        parts.push(vec![
+            plain(format!(
+                "the deletion of {}",
+                super::backups::at_least(since)
+            )),
+            mono(count(since.deleted)),
+            plain(format!(" {}", plural(since.deleted, "transaction"))),
         ]);
     }
     if since.suggestions > 0 {
@@ -514,6 +559,9 @@ mod tests {
             }],
             edits: 4,
             manual: 2,
+            deleted: 1,
+            deleted_at_least: false,
+            deleted_unknown: false,
             suggestions: 12,
         };
         let text = text(undoes(&since));
@@ -523,10 +571,81 @@ mod tests {
             "296",
             " rows)",
             " transactions added by you",
+            "the deletion of ",
+            " transaction",
             " and ",
             " Inbox suggestions",
         ] {
             assert!(text.contains(part), "{part} in {text}");
         }
+        assert_eq!(
+            Run::joined(&undoes(&since)),
+            "the import of monzo-november.csv (296 rows), 4 edits, 2 transactions added by \
+             you, the deletion of 1 transaction and 12 Inbox suggestions."
+        );
+    }
+
+    /// SLI-57: a count that ran out of its budget says it's unknown, never
+    /// 0 or the cap.
+    #[test]
+    fn says_when_the_deletions_are_unknown() {
+        let since = Since {
+            deleted_unknown: true,
+            ..Since::default()
+        };
+        assert!(!since.is_empty());
+        assert_eq!(
+            Run::joined(&undoes(&since)),
+            "the deletion of an unknown number of transactions."
+        );
+        let lines: Vec<(String, String)> = super::super::backups::since_lines(&since)
+            .into_iter()
+            .map(|(label, value)| (Run::joined(&label), value))
+            .collect();
+        assert_eq!(lines, [("Deleted".to_owned(), "couldn't count".to_owned())]);
+        let with_edits = Since {
+            edits: 2,
+            deleted_unknown: true,
+            ..Since::default()
+        };
+        assert_eq!(
+            Run::joined(&undoes(&with_edits)),
+            "2 edits and the deletion of an unknown number of transactions."
+        );
+    }
+
+    /// SLI-57: past the cap, the count says "at least".
+    #[test]
+    fn says_at_least_when_counting_deletions_stopped() {
+        use orre_core::backup::detail::DELETED_CAP;
+
+        let since = Since {
+            deleted: DELETED_CAP,
+            deleted_at_least: true,
+            ..Since::default()
+        };
+        assert_eq!(
+            Run::joined(&undoes(&since)),
+            "the deletion of at least 10,000 transactions."
+        );
+        let lines: Vec<(String, String)> = super::super::backups::since_lines(&since)
+            .into_iter()
+            .map(|(label, value)| (Run::joined(&label), value))
+            .collect();
+        assert_eq!(
+            lines,
+            [(
+                "Deleted".to_owned(),
+                "at least 10,000 transactions".to_owned()
+            )]
+        );
+        let exact = Since {
+            deleted: DELETED_CAP,
+            ..Since::default()
+        };
+        assert_eq!(
+            Run::joined(&undoes(&exact)),
+            "the deletion of 10,000 transactions."
+        );
     }
 }

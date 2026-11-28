@@ -228,9 +228,9 @@ pub fn mono(text: impl Into<String>) -> Run {
 }
 
 impl Run {
-    /// The runs' text, joined as the paragraph draws it (test-only, for a
-    /// `describe()`).
-    #[cfg(any(test, feature = "dev-driver"))]
+    /// The runs' text, joined as the paragraph draws it: for a
+    /// `describe()`, and for `orre restore`, which prints the dialog's
+    /// sentence.
     pub fn joined(runs: &[Run]) -> String {
         runs.iter().map(|run| run.text.as_str()).collect()
     }

@@ -245,10 +245,10 @@ impl SettingsStore {
         })
     }
 
-    /// What restoring a backup taken at `taken_at` would undo.
-    pub fn since(&self, taken_at: DateTime<Utc>) -> Result<Since, StoreError> {
+    /// What restoring `backup`, taken at `taken_at`, would undo.
+    pub fn since(&self, backup: &Path, taken_at: DateTime<Utc>) -> Result<Since, StoreError> {
         let db = self.open()?;
-        Ok(detail::since(&db, taken_at)?)
+        Ok(detail::since(&db, backup, taken_at)?)
     }
 
     /// Switches AI access on or off for every client.
@@ -469,7 +469,12 @@ mod tests {
         assert_eq!(data.rows[0].backup, backup);
         assert!(!data.rows[0].monthly);
         assert!(store.assess(&backup.path).unwrap().is_ready());
-        assert!(store.since(backup.taken_at).unwrap().is_empty());
+        assert!(
+            store
+                .since(&backup.path, backup.taken_at)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// SLI-41: a transaction added by hand since the backup is listed
@@ -512,7 +517,7 @@ mod tests {
         manual::create(&mut db, &entry("Market stall")).unwrap();
         drop(db);
 
-        let since = store.since(backup.taken_at).unwrap();
+        let since = store.since(&backup.path, backup.taken_at).unwrap();
         let lines: Vec<(String, String)> = since_lines(&since)
             .into_iter()
             .map(|(label, value)| (Run::joined(&label), value))
@@ -521,9 +526,55 @@ mod tests {
             lines,
             [
                 ("Your edits".to_owned(), "1".to_owned()),
-                ("Added by you".to_owned(), "1 transaction".to_owned()),
+                ("Added".to_owned(), "1 transaction".to_owned()),
             ]
         );
+    }
+
+    /// SLI-57: a transaction added by hand before the backup and deleted
+    /// since is listed, since restoring brings it back.
+    #[test]
+    fn since_lists_transactions_deleted_by_hand() {
+        use orre_core::account::{AccountKind, NewAccount};
+        use orre_core::manual::{self, ManualTransaction};
+        use orre_core::money::{Currency, Money};
+
+        use crate::settings::backups::since_lines;
+        use crate::settings::table::Run;
+
+        let (_dir, store) = store();
+        let mut db = Database::open(store.database()).unwrap();
+        let account = account::create(
+            &mut db,
+            &NewAccount::new("Current", AccountKind::Current, Currency::GBP),
+        )
+        .unwrap();
+        let entry = ManualTransaction::new(
+            account,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+            Money::new(-1250, Currency::GBP),
+            "QA Pre Backup",
+        );
+        let gone = manual::create(&mut db, &entry).unwrap();
+        drop(db);
+        let (backup, _) = store.back_up().unwrap();
+        assert!(
+            store
+                .since(&backup.path, backup.taken_at)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut db = Database::open(store.database()).unwrap();
+        manual::delete(&mut db, gone).unwrap();
+        drop(db);
+
+        let since = store.since(&backup.path, backup.taken_at).unwrap();
+        let lines: Vec<(String, String)> = since_lines(&since)
+            .into_iter()
+            .map(|(label, value)| (Run::joined(&label), value))
+            .collect();
+        assert_eq!(lines, [("Deleted".to_owned(), "1 transaction".to_owned())]);
     }
 
     #[test]
