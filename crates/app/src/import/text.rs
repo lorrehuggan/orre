@@ -356,7 +356,7 @@ pub fn reconciliation(preview: &ImportPreview, exporter: &str) -> Block {
         },
         ReconciliationStatus::StartingPoint => {
             let first = preview.balances().first();
-            let mut body = vec![plain("The statement’s balance")];
+            let mut body = vec![plain("The expected balance")];
             if let Some(balance) = first {
                 body.extend([
                     plain(" on "),
@@ -385,7 +385,7 @@ pub fn reconciliation(preview: &ImportPreview, exporter: &str) -> Block {
                 .or_else(|| reconciliation.checks.iter().max_by_key(|check| check.date));
             let body = match latest {
                 Some(check) => vec![
-                    plain("The statement’s closing balance on "),
+                    plain("The expected balance on "),
                     day(check.date),
                     plain(" is "),
                     amount(check.stated),
@@ -433,7 +433,7 @@ fn mismatch_body(preview: &ImportPreview) -> Vec<Seg> {
             check.stated.currency(),
         );
         let mut body = vec![
-            plain("The statement says "),
+            plain("It should be "),
             amount(check.stated),
             plain(" on "),
             day(check.date),
@@ -739,8 +739,15 @@ pub fn undone(file: &str) -> Vec<Seg> {
 
 #[cfg(test)]
 mod tests {
+    use orre_core::account::{self, AccountKind, EnteredBalance, EnteredSource, NewAccount};
+    use orre_core::db::Database;
+    use orre_core::id::AccountId;
+    use orre_core::import::preview;
     use orre_core::money::{Currency, ParseAmountError};
-    use orre_core::statement::{Field, SubAccountKind, SubAccountRef};
+    use orre_core::statement::{
+        DatedBalance, Field, SourceFormat, Statement, SubAccountKind, SubAccountRef,
+    };
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -965,7 +972,124 @@ mod tests {
             "16 rows match transactions you already have, so they are skipped."
         );
         assert_eq!(already_caption(0), None);
+
         assert_eq!(bank_name("Monzo (current account)"), "Monzo");
         assert_eq!(bank_name("Monzo"), "Monzo");
+    }
+
+    struct Ledger {
+        db: Database,
+        _dir: TempDir,
+    }
+
+    impl Ledger {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let db = Database::open(&dir.path().join("orre.db")).unwrap();
+            Self { db, _dir: dir }
+        }
+
+        fn account(&mut self, name: &str) -> AccountId {
+            account::create(
+                &mut self.db,
+                &NewAccount::new(name, AccountKind::Current, Currency::GBP),
+            )
+            .unwrap()
+        }
+
+        fn entered(&mut self, account: AccountId, d: u32, minor: i64) {
+            account::add_balance(
+                &mut self.db,
+                account,
+                &EnteredBalance {
+                    date: date(d),
+                    balance: Money::new(minor, Currency::GBP),
+                    source: EnteredSource::Manual,
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        fn preview(
+            &self,
+            account: AccountId,
+            statement: Statement,
+        ) -> orre_core::import::ImportPreview {
+            preview(&self.db, account, "statement.csv", statement).unwrap()
+        }
+    }
+
+    fn gbp_line(d: u32, minor: i64, description: &str) -> StatementLine {
+        StatementLine::new(date(d), Money::new(minor, Currency::GBP), description)
+    }
+
+    fn rows(lines: Vec<StatementLine>) -> Statement {
+        let mut statement = Statement::new(SourceFormat::Csv, Currency::GBP);
+        for (index, line) in lines.into_iter().enumerate() {
+            statement.push(SourceLocation::Line(index as u64 + 2), Ok(line));
+        }
+        statement
+    }
+
+    fn ofx_with_closing(lines: Vec<StatementLine>, closing_day: u32, minor: i64) -> Statement {
+        let mut statement = Statement::new(SourceFormat::Ofx, Currency::GBP);
+        for (index, line) in lines.into_iter().enumerate() {
+            statement.push(SourceLocation::Entry(index as u64 + 1), Ok(line));
+        }
+        statement
+            .push_balance(DatedBalance {
+                date: date(closing_day),
+                balance: Money::new(minor, Currency::GBP),
+            })
+            .unwrap();
+        statement
+    }
+
+    fn body(preview: &orre_core::import::ImportPreview) -> String {
+        joined(&reconciliation(preview, "Monzo exports").body)
+    }
+
+    #[test]
+    fn the_starting_point_names_the_expected_balance() {
+        let mut ledger = Ledger::new();
+        let account = ledger.account("Current");
+        let preview = ledger.preview(
+            account,
+            ofx_with_closing(vec![gbp_line(2, -500, "Coffee")], 5, 10_000),
+        );
+        assert_eq!(
+            body(&preview),
+            "The expected balance on 5 Nov is £100.00, the first Current has, so there’s nothing to check it against yet. Later imports are checked from it."
+        );
+    }
+
+    #[test]
+    fn a_reconciled_file_names_the_expected_balance() {
+        let mut ledger = Ledger::new();
+        let account = ledger.account("Current");
+        ledger.entered(account, 1, 10_000);
+        ledger.entered(account, 10, 9_000);
+        let preview = ledger.preview(
+            account,
+            rows(vec![gbp_line(3, -600, "Rent"), gbp_line(8, -400, "Gas")]),
+        );
+        assert_eq!(
+            body(&preview),
+            "The expected balance on 10 Nov is £90.00, and the imported rows add up to it exactly."
+        );
+    }
+
+    #[test]
+    fn a_mismatch_says_what_the_balance_should_be() {
+        let mut ledger = Ledger::new();
+        let account = ledger.account("Current");
+        ledger.entered(account, 1, 10_000);
+        ledger.entered(account, 10, 9_000);
+        let preview = ledger.preview(account, rows(vec![gbp_line(3, -600, "Rent")]));
+        assert_eq!(
+            body(&preview),
+            "It should be £90.00 on 10 Nov; the imported rows give £94.00, £4.00 over. The gap is between 1 Nov, the last balance that matched, and 10 Nov. Importing keeps the mismatch flagged on the account until it’s resolved."
+        );
     }
 }
