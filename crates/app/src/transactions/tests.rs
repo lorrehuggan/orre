@@ -1322,6 +1322,104 @@ fn a_click_on_the_bulk_bar_does_not_reach_the_row_beneath(cx: &mut TestAppContex
     assert_eq!(open_menu(&view, cx), Some(Menu::Bulk));
 }
 
+/// The undo bar floats in the bulk-action bar's slot over the rows: a click
+/// on it mustn't reach the row beneath and replace the selection (SLI-80).
+#[gpui_kit::test]
+fn a_click_on_the_undo_bar_does_not_reach_the_row_beneath(cx: &mut TestAppContext) {
+    setup(cx);
+    cx.update(crate::shell::init);
+    let (shell, cx) = cx.add_window_view(|window, cx| {
+        crate::shell::ShellView::new(crate::shell::View::Transactions, window, cx)
+    });
+    redraw(cx);
+    let view = cx.update(|_, cx| shell.read(cx).transactions().clone());
+    let rows = listed(&view, cx);
+    let keep = rows[0];
+    click(row_id(keep), cx);
+    assert_eq!(selected(&view, cx), [keep]);
+
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.undo = Some(Undo {
+                action: UndoAction::Include(keep),
+                message: "Categorised 3 transactions as Clothing".into(),
+            });
+        });
+    });
+    redraw(cx);
+    assert!(shows("undo-dismiss", cx), "the undo bar is showing");
+
+    let beneath = cx.update(|window, _| {
+        let at = window.find("undo-dismiss").bounds().center();
+        rows.iter().copied().find(|id| {
+            window
+                .try_find(row_id(*id))
+                .is_some_and(|row| row.bounds().contains(&at))
+        })
+    });
+    assert!(beneath.is_some(), "a row lies under the undo bar");
+    assert_ne!(
+        beneath,
+        Some(keep),
+        "the selected row is not the one under the bar"
+    );
+
+    click("undo-dismiss", cx);
+
+    assert_eq!(selected(&view, cx), [keep], "the selection is kept");
+}
+
+/// The notification bar floats in the bulk-action bar's slot over the rows: a
+/// click on it mustn't reach the row beneath and replace the selection (SLI-80).
+#[gpui_kit::test]
+fn a_click_on_the_notification_bar_does_not_reach_the_row_beneath(cx: &mut TestAppContext) {
+    setup(cx);
+    cx.update(crate::shell::init);
+    let (shell, cx) = cx.add_window_view(|window, cx| {
+        crate::shell::ShellView::new(crate::shell::View::Transactions, window, cx)
+    });
+    redraw(cx);
+    let view = cx.update(|_, cx| shell.read(cx).transactions().clone());
+    let rows = listed(&view, cx);
+    let keep = rows[0];
+    click(row_id(keep), cx);
+    assert_eq!(selected(&view, cx), [keep]);
+
+    cx.update(|_, cx| {
+        view.update(cx, |view, _| {
+            view.edit_failure = Some(EditFailure {
+                row: keep,
+                place: EditPlace::Details,
+                reason: "Couldn't parse the date".into(),
+            });
+        });
+    });
+    redraw(cx);
+    assert!(
+        shows("notification-dismiss", cx),
+        "the notification bar is showing"
+    );
+
+    let beneath = cx.update(|window, _| {
+        let at = window.find("notification-dismiss").bounds().center();
+        rows.iter().copied().find(|id| {
+            window
+                .try_find(row_id(*id))
+                .is_some_and(|row| row.bounds().contains(&at))
+        })
+    });
+    assert!(beneath.is_some(), "a row lies under the notification bar");
+    assert_ne!(
+        beneath,
+        Some(keep),
+        "the selected row is not the one under the bar"
+    );
+
+    click("notification-dismiss", cx);
+
+    assert_eq!(selected(&view, cx), [keep], "the selection is kept");
+}
+
 #[gpui_kit::test]
 fn tab_reaches_add_tag_in_the_inspector(cx: &mut TestAppContext) {
     let (view, mut cx) = open_rooted(cx);
