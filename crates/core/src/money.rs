@@ -595,6 +595,37 @@ mod tests {
         assert_eq!(message("GBP"), "amounts can't exceed 10,000,000,000.00 GBP");
         assert_eq!(message("JPY"), "amounts can't exceed 1,000,000,000,000 JPY");
         assert_eq!(message("KWD"), "amounts can't exceed 1,000,000,000.000 KWD");
+        // Nine whole digits: three full groups, no comma before the first.
+        assert_eq!(message("CLF"), "amounts can't exceed 100,000,000.0000 CLF");
+    }
+
+    #[test]
+    fn a_second_decimal_mark_is_named_as_the_problem() {
+        use DecimalMark::{Comma, Point};
+        let message = |text, mark| parse(text, "GBP", mark).unwrap_err().to_string();
+        let twice = "the amount isn't a number: more than one decimal mark";
+        assert_eq!(message("1.2.3", Point), twice);
+        assert_eq!(message("12.34.", Point), twice);
+        assert_eq!(message("1,2,3", Comma), twice);
+    }
+
+    #[test]
+    fn only_spaces_apostrophes_and_the_other_mark_group_thousands() {
+        use DecimalMark::{Comma, Point};
+        let unexpected = Err(ParseAmountError::Malformed("unexpected character"));
+        for (text, mark) in [
+            ("1x234.56", Point),
+            ("1_234.56", Point),
+            ("1e234", Point),
+            ("1-234", Point),
+            ("1/234,56", Comma),
+        ] {
+            assert_eq!(
+                parse(text, "GBP", mark),
+                unexpected,
+                "{text:?} with {mark:?}"
+            );
+        }
     }
 
     #[test]
