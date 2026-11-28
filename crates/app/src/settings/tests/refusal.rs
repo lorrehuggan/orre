@@ -279,7 +279,7 @@ fn details_name_the_object_but_never_its_sql_or_the_path(cx: &mut TestAppContext
     press("escape", cx);
 
     // A hostile name is capped, its quotes and control characters escaped.
-    let name = format!("qa\"\n\u{202E}{}", "x".repeat(300));
+    let name = format!("qa\"\n\u{202E}\u{200B}{}", "x".repeat(300));
     let hostile = copy_of_a_backup(&scratch, "hostile.db");
     Connection::open(&hostile)
         .unwrap()
@@ -298,13 +298,134 @@ fn details_name_the_object_but_never_its_sql_or_the_path(cx: &mut TestAppContext
         .unwrap()
         .1;
     assert!(
-        details.starts_with("its schema has an extra table \"qa\\\"\\u{a}\\u{202e}xxx"),
+        details.starts_with("its schema has an extra table \"qa\\\"\\u{a}\\u{202e}\\u{200b}xxx"),
         "{details}"
     );
     assert!(!details.contains('\n') && !details.contains('\u{202E}'));
-    // Core caps the name at 64 characters (without "…"); 300 went in.
-    assert_eq!(details.matches('x').count(), 64 - 4, "{details}");
-    assert!(details.chars().count() < 200, "{details}");
+    assert!(!details.contains('\u{200B}'));
+    // The name, escaped, stops at 64 characters and "…".
+    let shown = details
+        .strip_prefix("its schema has an extra table \"")
+        .and_then(|rest| rest.split_once("\" (compared"))
+        .unwrap()
+        .0;
+    assert_eq!(shown.chars().count(), 64 + 1, "{shown}");
+    assert!(shown.ends_with('…'), "{shown}");
+    press("escape", cx);
+
+    // David's shapes: a name made of tag characters and blanks, an index
+    // whose name would run in a shell, and a 5000-character name in a
+    // broken schema (SQLite's message for it is the Integrity "first").
+    let tags = format!(
+        "x{}\u{2800}\u{3164}\u{115F}",
+        (0x20..0x7f_u32)
+            .map(|c| char::from_u32(0xE0000 + c).unwrap())
+            .collect::<String>()
+    );
+    let tagged = copy_of_a_backup(&scratch, "tags.db");
+    sql(
+        &tagged,
+        &format!("CREATE TABLE \"{}\" (x INTEGER)", tags.replace('"', "\"\"")),
+    );
+    let details = open_details(&shell, &settings, &tagged, cx);
+    assert!(details.contains("\"x\\u{e0020}\\u{e0021}"), "{details}");
+    assert!(!details.contains('\u{E0041}') && !details.contains('\u{2800}'));
+    press("escape", cx);
+
+    let shell_name = copy_of_a_backup(&scratch, "idx_shell.db");
+    index_mismatch(&shell_name, "x$(touch /tmp/david_pwn)");
+    let details = open_details(&shell, &settings, &shell_name, cx);
+    assert!(
+        details.contains("missing from index x\\$(touch /tmp/david_pwn)"),
+        "{details}"
+    );
+    press("escape", cx);
+
+    let long = copy_of_a_backup(&scratch, "malformed_long.db");
+    {
+        let conn = Connection::open(&long).unwrap();
+        conn.execute_batch("PRAGMA writable_schema = ON").unwrap();
+        let name = "N".repeat(5000);
+        conn.execute(
+            "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) \
+             VALUES ('table', ?1, ?1, 2, 'CREATE TABLE zz (q')",
+            [&name],
+        )
+        .unwrap();
+        bump_schema_version(&conn);
+    }
+    let dialog = open_restore(&shell, &settings, &long, false, cx);
+    assert_eq!(
+        dialog.fields[0].0, "alert: The file is damaged",
+        "{dialog:?}"
+    );
+    click("restore-details", cx);
+    let details = details_of(&shell, &settings, cx);
+    let first = details.split_once("; the first: ").unwrap().1;
+    assert!(
+        first.chars().count() <= 160 + 1,
+        "{}",
+        first.chars().count()
+    );
+    assert!(first.ends_with('…'), "{first}");
+}
+
+/// Restores `path`'s dialog, opens Details and returns its text.
+fn open_details(
+    shell: &Entity<ShellView>,
+    settings: &Entity<SettingsView>,
+    path: &Path,
+    cx: &mut VisualTestContext,
+) -> String {
+    open_restore(shell, settings, path, false, cx);
+    click("restore-details", cx);
+    details_of(shell, settings, cx)
+}
+
+fn details_of(
+    shell: &Entity<ShellView>,
+    settings: &Entity<SettingsView>,
+    cx: &mut VisualTestContext,
+) -> String {
+    let dialog = describe(shell, settings, cx).dialog.unwrap();
+    dialog
+        .fields
+        .into_iter()
+        .find(|(label, _)| label == "Details")
+        .expect("Details open")
+        .1
+}
+
+fn bump_schema_version(conn: &Connection) {
+    let version: i64 = conn
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .unwrap();
+    conn.execute_batch(&format!("PRAGMA schema_version = {}", version + 1))
+        .unwrap();
+}
+
+/// David's `idx_mismatch`: an index named `name` whose entries don't match
+/// its table, so the integrity check names it ("row 1 missing from index
+/// …").
+fn index_mismatch(path: &Path, name: &str) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t (a); CREATE INDEX i ON t (a); INSERT INTO t VALUES (1), (2), (3); \
+         PRAGMA writable_schema = ON;",
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE sqlite_master SET name = ?1, sql = ?2 WHERE name = 'i'",
+        [
+            name,
+            &format!(
+                "CREATE INDEX \"{}\" ON t (a + 1)",
+                name.replace('"', "\"\"")
+            ),
+        ],
+    )
+    .unwrap();
+    bump_schema_version(&conn);
 }
 
 #[gpui_kit::test]
@@ -383,7 +504,7 @@ fn ai_access_that_wont_switch_off_fails_the_third_row(cx: &mut TestAppContext) {
             ("alert: AI access can't be switched off", "AI access"),
         ],
         "Orre only restores a backup if it can switch AI clients off afterwards. It can't do \
-         that here.",
+         that here. Your data hasn't changed.",
         false,
     );
 }
@@ -481,13 +602,17 @@ fn the_bar_after_a_restore_says_when_and_offers_ai_clients(cx: &mut TestAppConte
     redraw(cx);
     let shown = describe(&shell, &settings, cx);
     let notice = shown.notice.expect("the bar");
-    let today = cx.update(|_, cx| settings.read(cx).clock().today);
     assert_eq!(
         notice.message,
         format!(
             "Restored the backup from {} · AI clients are off",
-            refusal::when(row_local, today)
+            refusal::when(row_local)
         )
+    );
+    assert!(
+        notice
+            .message
+            .contains(&row_local.format(" %Y, ").to_string())
     );
     assert_eq!(
         notice.actions,
@@ -500,4 +625,63 @@ fn the_bar_after_a_restore_says_when_and_offers_ai_clients(cx: &mut TestAppConte
         super::super::Section::Clients
     );
     assert_eq!(shown.notice, None);
+}
+
+/// What the restore did beyond the database (the access-log entries it
+/// kept) shows on the backup it took first, under "Since this backup", not
+/// in the bar.
+#[gpui_kit::test]
+fn what_a_restore_kept_shows_on_the_backup_it_took_first(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let (shell, settings, cx) = open(cx, &scratch);
+    click("settings-backups", cx);
+    click("back-up-now", cx);
+    // A call logged after the backup: the restore keeps it.
+    access_log::append(
+        &mut scratch.db(),
+        &NewEntry {
+            client: name("claude-code"),
+            tool: "search_transactions".into(),
+            access_level: Some(AccessLevel::Standard),
+            outcome: Outcome::Ok,
+            purpose: None,
+            args_redacted_json: "{}".into(),
+            row_count: 1,
+            result_hash: Some("cd".into()),
+            withheld_count: 0,
+        },
+    )
+    .unwrap();
+    click("restore-backup", cx);
+    cx.run_until_parked();
+    click("restore-confirm", cx);
+    cx.run_until_parked();
+    redraw(cx);
+    let notice = describe(&shell, &settings, cx).notice.expect("the bar");
+    assert!(!notice.message.contains("kept"), "{notice:?}");
+    assert!(!notice.message.contains("updated"), "{notice:?}");
+
+    let taken_first = backup::list(&scratch.path)
+        .unwrap()
+        .into_iter()
+        .find(|backup| backup.reason == backup::Reason::Restore)
+        .expect("the backup taken first");
+    click(
+        &format!("backup-{}", taken_first.taken_at.timestamp_millis()),
+        cx,
+    );
+    let inspector = describe(&shell, &settings, cx)
+        .inspector
+        .expect("the backup's inspector");
+    let since = inspector
+        .sections
+        .iter()
+        .find(|section| section.title.as_deref() == Some("Since this backup"))
+        .unwrap();
+    assert!(
+        since
+            .rows
+            .contains(&("Access log".to_owned(), "kept 1 newer entry".to_owned())),
+        "{since:?}"
+    );
 }

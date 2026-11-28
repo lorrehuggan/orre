@@ -404,11 +404,17 @@ impl SettingsView {
                 |section, (label, value)| section.row(joined(&label), value),
             ),
             None => Section::titled("Since this backup"),
-        }
-        .action(Action::button(
-            "Restore…",
-            backups::readable(row, supported),
-        ));
+        };
+        let since = self
+            .restore_lines(row)
+            .into_iter()
+            .fold(since, |section, (label, value)| {
+                section.row(joined(&label), value)
+            })
+            .action(Action::button(
+                "Restore…",
+                backups::readable(row, supported),
+            ));
         let (dir, name) = backups::file_lines(row);
         let file = Section::titled("File")
             .row("", format!("{dir}{name}"))

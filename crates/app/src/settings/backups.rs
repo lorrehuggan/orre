@@ -237,6 +237,28 @@ pub fn since_lines(since: &Since) -> Vec<(Vec<table::Run>, String)> {
     lines
 }
 
+/// One line under "Since this backup": what, then how many in mono.
+fn since_row(label: Vec<table::Run>, value: String) -> AnyElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(spacing::S2)
+        .h(size::CONTROL_SM)
+        .child(
+            rich(typography::BODY, color::TEXT, label)
+                .flex_1()
+                .min_w_0(),
+        )
+        .child(
+            div()
+                .text_role(typography::MONO_VALUE)
+                .text_color(color::TEXT_SECONDARY)
+                .child(value),
+        )
+        .into_any_element()
+}
+
 /// "at least " when counting deletions stopped at its cap.
 pub(super) fn at_least(since: &Since) -> &'static str {
     if since.deleted_at_least {
@@ -262,6 +284,31 @@ pub fn file_lines(row: &BackupRow) -> (String, String) {
 }
 
 impl SettingsView {
+    /// What the last restore did, on the backup it took first (SLI-71: the
+    /// notification says only that it restored): updated to this version,
+    /// and the access-log entries it kept. Known for this session only.
+    pub(super) fn restore_lines(&self, row: &BackupRow) -> Vec<(Vec<table::Run>, String)> {
+        let Some(last) = self
+            .last_restore
+            .as_ref()
+            .filter(|last| last.pre_restore == row.backup.path)
+        else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        if last.migrated {
+            lines.push((vec![plain("Updated")], "to this version".to_owned()));
+        }
+        if let Some(kept @ 1..) = last.log_kept {
+            let entries = if kept == 1 { "entry" } else { "entries" };
+            lines.push((
+                vec![plain("Access log")],
+                format!("kept {kept} newer {entries}"),
+            ));
+        }
+        lines
+    }
+
     /// What restoring the selected backup would undo, once it's been read.
     pub(super) fn since_for(&self, row: &BackupRow) -> Option<&Since> {
         self.since
@@ -458,33 +505,19 @@ impl SettingsView {
                     .child(file_size(row.backup.size)),
             ));
 
-        let since_rows: Vec<AnyElement> = match self.since_for(&row) {
+        let mut since_rows: Vec<AnyElement> = match self.since_for(&row) {
             Some(since) if since.is_empty() => vec![caption(NOTHING_SINCE).into_any_element()],
             Some(since) => since_lines(since)
                 .into_iter()
-                .map(|(label, value)| {
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(spacing::S2)
-                        .h(size::CONTROL_SM)
-                        .child(
-                            rich(typography::BODY, color::TEXT, label)
-                                .flex_1()
-                                .min_w_0(),
-                        )
-                        .child(
-                            div()
-                                .text_role(typography::MONO_VALUE)
-                                .text_color(color::TEXT_SECONDARY)
-                                .child(value),
-                        )
-                        .into_any_element()
-                })
+                .map(|(label, value)| since_row(label, value))
                 .collect(),
             None => Vec::new(),
         };
+        since_rows.extend(
+            self.restore_lines(&row)
+                .into_iter()
+                .map(|(label, value)| since_row(label, value)),
+        );
         let readable = readable(&row, supported);
         let restore = section(Some("Since this backup"))
             .children(since_rows)

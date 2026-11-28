@@ -1049,7 +1049,9 @@ token, `--container-dialog`.
   (bulk categorise, apply a rule, merge duplicates), a floating bar replaces the
   bulk-action bar in its place. It is drawn with `float`, a `border` line, `radius-lg` and
   the Toolbar shadow. Contents: a 14px `check`, the change in body text ("Categorised 3
-  transactions as Shopping"), outline "Undo", and a 24px dismiss icon button. Undo
+  transactions as Shopping"), outline "Undo", and a 24px dismiss icon button. A
+  notification bar says one fact and takes at most two actions plus dismiss: the first
+  outline, the second ghost (SLI-71); it never truncates or wraps. Undo
   reverts the `change_batch`. The bar stays until dismissed or until the next change;
   undo stays available afterwards from the batch history (D6.7).
 - **Dialogs** (`51L-0`, `529-0`) use `--container-dialog` (440px) for a confirmation or a
@@ -2217,8 +2219,11 @@ Claude Code connected at standard access, the November Monzo import, 1,312 trans
     "It's from a different build of Orre" fail the second; a current database that
     can't be read, or a refused restore, is said in `danger` with what to do; an earlier
     restore that stopped part-way is mentioned, as `orre restore` does. After a
-    restore, the notification bar says so, with "Show in folder" for the backup of what
-    it replaced. A caption says your own bank presets aren't in backups, so restoring
+    restore, the notification bar says "Restored the backup from 28 Nov 2026, 16:35 · AI
+    clients are off", with outline "AI clients" (Settings → AI clients) and ghost "Show
+    in folder" for the backup of what it replaced (SLI-71). Whether the backup was
+    updated to this version, and the newer access-log entries kept, show under "Since
+    this backup" on that backup, for the session. A caption says your own bank presets aren't in backups, so restoring
     doesn't change them, and an account whose preset isn't on this computer asks for its
     columns again at the next import (R.12).
   - *Retention, total and Delete* (R.12, composed 2026-11-19): the toolbar caption reads

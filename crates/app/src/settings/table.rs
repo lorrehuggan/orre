@@ -476,24 +476,10 @@ pub fn notice_text(message: &NoticeMessage) -> NoticeText {
             plain(" · ").color(color::TEXT_MUTED),
             mono(file_size(*size)).color(color::TEXT_MUTED),
         ]),
-        NoticeMessage::Restored {
-            from,
-            migrated,
-            log_kept,
-        } => {
+        NoticeMessage::Restored { from } => {
             let mut text = String::from("Restored the backup");
             if let Some(from) = from {
                 text.push_str(&format!(" from {from}"));
-            }
-            if *migrated {
-                text.push_str(" and updated it to this version");
-            }
-            match log_kept {
-                Some(0) | None => {}
-                Some(rows) => text.push_str(&format!(
-                    " · kept {rows} newer access-log {}",
-                    if *rows == 1 { "entry" } else { "entries" }
-                )),
             }
             text.push_str(" · ");
             text.push_str(AI_CLIENTS_ARE_OFF);
@@ -520,8 +506,8 @@ pub fn notice_bar(notice: &Notice, cx: &mut Context<SettingsView>) -> Notificati
             matches!(notice.message, NoticeMessage::Restored { .. }),
             |this| {
                 this.action(
+                    // Outline, as a bar's first action is.
                     Button::new("notice-ai-clients", super::clients::TITLE)
-                        .with_variant(ButtonVariant::OutlineCompact)
                         .with_surface(color::FLOAT)
                         .on_click(move |_, _, cx: &mut App| {
                             let _ = clients.update(cx, |this, cx| this.show(Section::Clients, cx));

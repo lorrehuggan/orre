@@ -1472,6 +1472,79 @@ fn assert_switching_off_fails_with(schema: &str) {
     assert_eq!(state(&Connection::open(&copy).unwrap()), before, "{schema}");
 }
 
+/// What the user has when a restore is refused for AI access (SLI-71: the
+/// dialog's closing line). `restore` can't be made to get this far with a
+/// hostile backup (the schema check refuses it first), so this runs
+/// `restore`'s own steps from the lock on, in its order: wait for
+/// connections and back the current database up (`Reason::Restore`, which
+/// rotates), read the kill switch, then switch AI access off in a staged
+/// copy that won't let it. The data is unchanged; the list gains the
+/// pre-restore backup, but with [`KEEP_RECENT`] automatic backups already
+/// there rotation deletes the oldest, so the count doesn't rise.
+#[test]
+fn an_ai_access_refusal_leaves_the_data_but_not_always_one_more_backup() {
+    let refuse = |setup: &Setup| -> Error {
+        let staged_dir = TempDir::new().unwrap();
+        let staged = permissive_backup(&staged_dir);
+        Connection::open(&staged)
+            .unwrap()
+            .execute_batch(CLIENTS_IGNORE_SWITCH_OFF)
+            .unwrap();
+        release_waiting(&setup.path).unwrap();
+        create_from_path(&setup.path, Reason::Restore).unwrap();
+        let keep_switch_off = !kill_switch_on(&setup.path);
+        switch_ai_access_off(&staged, &staged, keep_switch_off).unwrap_err()
+    };
+
+    // A few backups: the pre-restore one is one more in the list.
+    let setup = Setup::new();
+    let backups_before = list(&setup.path).unwrap().len();
+    let bytes_before = fs::read(&setup.path).unwrap();
+    let err = refuse(&setup);
+    assert_eq!(fs::read(&setup.path).unwrap(), bytes_before, "the file too");
+    assert!(matches!(err, Error::AiAccessNotOff { .. }), "{err:?}");
+    assert_eq!(
+        account_names(&setup.path),
+        ["Current"],
+        "the data is unchanged"
+    );
+    let after = list(&setup.path).unwrap();
+    assert_eq!(after.len(), backups_before + 1);
+    assert_eq!(after[0].reason, Reason::Restore);
+
+    // KEEP_RECENT automatic backups already: one more, one rotated away.
+    let setup = Setup::new();
+    {
+        let db = Database::open(&setup.path).unwrap();
+        for _ in 0..KEEP_RECENT {
+            create(&db, Reason::Import).unwrap();
+        }
+    }
+    let before = list(&setup.path).unwrap();
+    let err = refuse(&setup);
+    assert!(matches!(err, Error::AiAccessNotOff { .. }), "{err:?}");
+    assert_eq!(
+        account_names(&setup.path),
+        ["Current"],
+        "the data is unchanged"
+    );
+    let after = list(&setup.path).unwrap();
+    assert_eq!(
+        after[0].reason,
+        Reason::Restore,
+        "the pre-restore backup is listed"
+    );
+    assert_eq!(after.len(), before.len(), "but the count didn't rise");
+    let oldest_import = before
+        .iter()
+        .rfind(|backup| backup.reason == Reason::Import)
+        .unwrap();
+    assert!(
+        !after.contains(oldest_import),
+        "rotation deleted the oldest"
+    );
+}
+
 #[test]
 fn switching_off_fails_when_the_clients_ignore_it() {
     assert_switching_off_fails_with(CLIENTS_IGNORE_SWITCH_OFF);

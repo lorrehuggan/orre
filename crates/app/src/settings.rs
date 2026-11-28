@@ -175,15 +175,25 @@ pub enum NoticeMessage {
     Copied { file: String },
     /// After a backup was deleted: the space it freed.
     Deleted { size: u64 },
-    /// After a restore: when the backup was taken ("28 Nov, 11:40"), when
-    /// known.
-    Restored {
-        from: Option<String>,
-        migrated: bool,
-        log_kept: Option<usize>,
-    },
+    /// After a restore: when the backup was taken ("28 Nov 2026, 11:40"),
+    /// when known. One fact: whether it was updated and what the access log
+    /// kept are under "Since this backup" on the backup it took first
+    /// ([`LastRestore`]).
+    Restored { from: Option<String> },
     /// Something failed; the text says what, and that nothing changed.
     Failed(SharedString),
+}
+
+/// What a restore did beyond replacing the database, shown on the backup it
+/// took of the database it replaced (`SettingsView::restore_lines`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastRestore {
+    pub pre_restore: PathBuf,
+    /// The backup was older and updated to this version.
+    pub migrated: bool,
+    /// Newer access-log rows kept from the replaced database; `None` when
+    /// carrying them failed.
+    pub log_kept: Option<usize>,
 }
 
 /// Where Settings' data comes from.
@@ -249,6 +259,8 @@ pub struct SettingsView {
     day_select: SelectState,
 
     notice: Option<Notice>,
+    /// What the last restore in this window did (session only).
+    last_restore: Option<LastRestore>,
     panel_focus: FocusHandle,
     list_focus: FocusHandle,
     _task: Option<Task<()>>,
@@ -374,6 +386,7 @@ impl SettingsView {
             month_start_error: None,
             day_select: SelectState::new(cx),
             notice: None,
+            last_restore: None,
             panel_focus: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             _task: None,
@@ -1133,12 +1146,14 @@ impl SettingsView {
         taken: Option<chrono::NaiveDateTime>,
         cx: &mut Context<Self>,
     ) {
-        let today = self.clock().today;
+        self.last_restore = restored.pre_restore.as_ref().map(|backup| LastRestore {
+            pre_restore: backup.path.clone(),
+            migrated: restored.migrated_to.is_some(),
+            log_kept: restored.log_rows_carried,
+        });
         self.notice = Some(Notice {
             message: NoticeMessage::Restored {
-                from: taken.map(|local| restore::refusal::when(local, today)),
-                migrated: restored.migrated_to.is_some(),
-                log_kept: restored.log_rows_carried,
+                from: taken.map(restore::refusal::when),
             },
             reveal: restored
                 .pre_restore

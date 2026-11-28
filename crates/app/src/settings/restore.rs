@@ -79,7 +79,6 @@ pub struct RestoreDialog {
     /// What restoring undoes, when the backup's time is known and the
     /// count, read in the background, has landed.
     since: Option<Since>,
-    today: chrono::NaiveDate,
     /// Why the last restore was refused.
     error: Option<SharedString>,
     /// Row ③, the Details block and "Choose another file…" (SLI-71).
@@ -102,16 +101,12 @@ impl RestoreDialog {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let (store, today) = {
-            let view = settings.read(cx);
-            (view.store().ok().cloned(), view.clock().today)
-        };
+        let store = settings.read(cx).store().ok().cloned();
         let mut dialog = Self {
             settings,
             target,
             stage: Stage::Checking,
             since: None,
-            today,
             error: None,
             refusal: refusal::RefusalState::new(cx),
             focus,
@@ -142,13 +137,11 @@ impl RestoreDialog {
         since: Option<Since>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let today = settings.read(cx).clock().today;
         Self {
             settings,
             target,
             stage,
             since,
-            today,
             error: None,
             refusal: refusal::RefusalState::new(cx),
             focus: cx.focus_handle(),
@@ -254,23 +247,25 @@ impl RestoreDialog {
         cx.emit(DialogClosed);
     }
 
-    /// "Restore the backup from 10 Nov, 14:02?", or the file's name.
+    /// "Restore the backup from 10 Nov 2026, 14:02?", or the file's name
+    /// ([`refusal::file_title`]: escaped and capped).
     fn title_runs(&self) -> Vec<Run> {
         match self.target.local {
             Some(local) => vec![
                 plain("Restore the backup from "),
-                mono(refusal::when(local, self.today)),
+                mono(refusal::when(local)),
                 plain("?"),
             ],
             None => vec![
                 plain("Restore "),
-                mono(
-                    self.target
+                mono(refusal::file_title(
+                    &self
+                        .target
                         .path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                ),
+                )),
                 plain("?"),
             ],
         }

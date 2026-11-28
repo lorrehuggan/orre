@@ -7,9 +7,10 @@
 //! body and, when the refusal has more to say than its row, a collapsed
 //! "Details" block. Everything here is built from the typed check result
 //! ([`Assessment`], [`Failure`]), never by reading an error's text, and
-//! nothing taken from the file reaches the window unescaped: object names
-//! and SQLite's messages are capped and their control characters escaped
-//! ([`inert`]). SQL from the file is never shown.
+//! nothing taken from the file reaches the window unescaped: object names,
+//! SQLite's messages, a chosen file's name and the `danger` caption all go
+//! through [`inert`] (invisible characters escaped, `$` and `` ` `` made
+//! inert for a shell, the output capped). SQL from the file is never shown.
 //!
 //! The third row can only fail when Restore is pressed: the restore
 //! switches the backup's AI clients off and reads them back before it
@@ -20,18 +21,22 @@
 //! "Choose another file…" (only when opened from "Restore from a file…")
 //! reopens the system's open dialog and runs the checks again in place.
 
+use std::f32::consts::FRAC_PI_2;
+use std::time::{Duration, Instant};
+
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context,
+    FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Transformation, Window, div, px, radians,
 };
 use orre_core::backup::detail::Assessment;
 use orre_core::backup::{self, Current};
 use orre_core::db;
 
 use crate::accounts::store::StoreError;
-use crate::theme::tokens::{color, radius, spacing, typography};
-use crate::ui::button::{Button, ButtonVariant, IconButton, IconButtonSize};
+use crate::theme::tokens::{color, motion, radius, shadow, size, spacing, typography};
+use crate::ui::button::{Button, ButtonVariant, GROUP, IconButton, IconButtonSize};
 use crate::ui::icon::Glyph;
 use crate::ui::text::TextRoleExt as _;
 use gpui_kit::component::Disableable as _;
@@ -52,10 +57,9 @@ pub const CHOOSE_ANOTHER: &str = "Choose another file…";
 /// The disclosure under a refusal.
 pub const DETAILS: &str = "Details";
 
-/// The Details block's copy button. String gap (SLI-71): the spec has no
-/// accessible name for it, so it borrows the only existing copy button's
-/// until one is written.
-pub const COPY_DETAILS: &str = "Copy the command";
+/// The Details block's copy button: its accessible name and its tooltip
+/// (Rowling, SLI-71 review).
+pub const COPY_DETAILS: &str = "Copy error details";
 
 /// Row ①.
 const INTACT: &str = "The file is intact";
@@ -80,21 +84,30 @@ const CANT_RESTORE: &str = "It can't be restored. Nothing has changed.";
 const UPDATE_ORRE: &str = "Update Orre, then restore it. Nothing has changed.";
 const SCHEMA_BODY: &str = "Orre only restores backups laid out the way it makes them. This one \
      may have been edited or come from another app. Nothing has changed.";
-/// Rowling's body for a backup whose AI access can't be switched off, less
-/// its last sentence, "Nothing has changed.": by the time the read-back
-/// fails, the restore has already backed the current database up (and
-/// rotation may have deleted an old automatic backup), so it isn't
-/// strictly true. The current database itself is unchanged.
+/// Rowling's body for a backup whose AI access can't be switched off. It
+/// closes with "Your data hasn't changed." and not "Nothing has changed."
+/// or "…you'll see one more backup in the list": by the time the read-back
+/// fails, `backup::restore` has already backed the current database up,
+/// and rotation can delete an old automatic backup then, so the list
+/// doesn't always grow. The database is untouched (`backup::tests::
+/// an_ai_access_refusal_leaves_the_data_but_not_always_one_more_backup`).
 const AI_BODY: &str = "Orre only restores a backup if it can switch AI clients off afterwards. \
-     It can't do that here.";
+     It can't do that here. Your data hasn't changed.";
 
-/// The longest object name the Details block shows, in characters (core
-/// caps it at the same length; this doesn't rely on that).
+/// The longest object or file name shown, in characters of escaped output
+/// (core caps a schema name at 64 input characters; this doesn't rely on
+/// that).
 const NAME_CAP: usize = 64;
-/// The longest SQLite message the Details block shows, in characters.
+/// The longest SQLite message the Details block shows, in characters of
+/// escaped output.
 const MESSAGE_CAP: usize = 160;
-/// The longest error the dialog's `danger` caption shows, in characters.
+/// The longest error the dialog's `danger` caption shows, in characters of
+/// escaped output.
 const ERROR_CAP: usize = 300;
+/// The Details chevron's turn: closed points right, open points down.
+const CHEVRON_TURN: Duration = Duration::from_millis(120);
+const CHEVRON_CLOSED: f32 = -FRAC_PI_2;
+const CHEVRON_OPEN: f32 = 0.;
 /// The Details block's height before it scrolls.
 const DETAILS_MAX_HEIGHT: f32 = 96.;
 
@@ -105,6 +118,7 @@ pub(super) struct RefusalState {
     pub ai_refused: bool,
     /// Whether the Details block is open.
     pub details_open: bool,
+    chevron: Chevron,
     /// "Choose another file…", focused first when it's there.
     pub choose: FocusHandle,
 }
@@ -114,9 +128,77 @@ impl RefusalState {
         Self {
             ai_refused: false,
             details_open: false,
+            chevron: Chevron::default(),
             choose: cx.focus_handle(),
         }
     }
+
+    /// Opens or closes Details. The chevron turns from wherever it is now,
+    /// so a click mid-turn turns it back from there, not from the end.
+    pub fn toggle(&mut self, now: Instant, reduce_motion: bool) {
+        self.chevron.turn(self.details_open, now, reduce_motion);
+        self.details_open = !self.details_open;
+    }
+
+    /// Closes Details at once, chevron and all (a new refusal or target).
+    fn close(&mut self) {
+        self.details_open = false;
+        self.chevron = Chevron::default();
+    }
+}
+
+/// The Details chevron's turn: where it started, in radians, and when; how
+/// many turns there have been (each animates under its own id).
+#[derive(Clone, Copy, Debug)]
+struct Chevron {
+    from: f32,
+    turned_at: Option<Instant>,
+    turns: u64,
+}
+
+impl Default for Chevron {
+    fn default() -> Self {
+        Self {
+            from: CHEVRON_CLOSED,
+            turned_at: None,
+            turns: 0,
+        }
+    }
+}
+
+impl Chevron {
+    /// The angle it's turning to, Details being `open`.
+    fn target(open: bool) -> f32 {
+        if open { CHEVRON_OPEN } else { CHEVRON_CLOSED }
+    }
+
+    /// Its angle at `now`, Details being `open`: along the turn, eased as
+    /// drawn.
+    fn angle(&self, open: bool, now: Instant, reduce_motion: bool) -> f32 {
+        let target = Self::target(open);
+        match self.turned_at {
+            Some(at) if !reduce_motion => {
+                let progress =
+                    (now.duration_since(at).as_secs_f32() / CHEVRON_TURN.as_secs_f32()).min(1.);
+                self.from + (target - self.from) * ease_out(progress)
+            }
+            _ => target,
+        }
+    }
+
+    /// Starts a turn from where it is at `now` (Details was `was_open`).
+    fn turn(&mut self, was_open: bool, now: Instant, reduce_motion: bool) {
+        self.from = self.angle(was_open, now, reduce_motion);
+        self.turned_at = Some(now);
+        self.turns += 1;
+    }
+}
+
+/// The entering curve (`motion::EASE_ENTER`, an ease-out) at `progress`.
+fn ease_out(progress: f32) -> f32 {
+    let curve = motion::EASE_ENTER;
+    gpui_kit::base::Easing::cubic_bezier(curve.x1, curve.y1, curve.x2, curve.y2)
+        .map_or(progress, |easing| easing.sample(progress))
 }
 
 /// Why a restore didn't happen, sorted from its typed error.
@@ -151,56 +233,65 @@ pub fn error_text(error: &dyn std::error::Error) -> SharedString {
     sentence(&inert(&error.to_string(), ERROR_CAP, false))
 }
 
-/// `text` safe to show: at most `cap` characters (then "…"), with control
-/// and invisible formatting characters (bidirectional overrides,
-/// zero-width ones) written as `\u{…}`. With `quoted` (a name that goes
-/// between quotes) `"` and `\` are escaped too; without it (a message), a
-/// line break or tab is a space.
+/// `text` safe to show, as every window path that shows text from a file
+/// (or an error about one) does, and as the copy button copies it:
+///
+/// - a character Rust's `char::escape_debug` would escape (controls,
+///   format characters such as bidirectional overrides, zero-width and tag
+///   characters, variation selectors, private use, combining marks, which
+///   are Grapheme_Extend, so a decomposed accent escapes, a precomposed
+///   "é" doesn't), and the two blanks it counts as printable (U+2800,
+///   U+FFFC), is written `\u{…}`; without `quoted` (a message) a line
+///   break or tab is a space instead;
+/// - `$` and `` ` `` get a backslash, so a copy pasted into a shell can't
+///   expand or run them; with `quoted` (a name between `"…"`) so do `"`
+///   and `\`;
+/// - the output stops before it would pass `cap` characters, never inside
+///   an escape, and ends with "…" then.
 pub fn inert(text: &str, cap: usize, quoted: bool) -> String {
     let mut out = String::new();
-    for (index, c) in text.chars().enumerate() {
-        if index == cap {
+    let mut length = 0;
+    for c in text.chars() {
+        let piece = if !quoted && (c == '\n' || c == '\t') {
+            // A line break in SQLite's own message reads as a space.
+            " ".to_owned()
+        } else if hidden(c) {
+            format!("\\u{{{:x}}}", u32::from(c))
+        } else if c == '$' || c == '`' || (quoted && (c == '"' || c == '\\')) {
+            format!("\\{c}")
+        } else {
+            c.to_string()
+        };
+        let added = piece.chars().count();
+        if length + added > cap {
             out.push('…');
             break;
         }
-        if !quoted && (c == '\n' || c == '\t') {
-            // A line break in SQLite's own message reads as a space.
-            out.push(' ');
-        } else if invisible(c) {
-            out.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
-        } else if quoted && (c == '"' || c == '\\') {
-            out.push('\\');
-            out.push(c);
-        } else {
-            out.push(c);
-        }
+        out.push_str(&piece);
+        length += added;
     }
     out
 }
 
-fn invisible(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{00AD}'
-                | '\u{061C}'
-                | '\u{180E}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-        )
+/// Whether `c` would be invisible, or isn't a character in its own right:
+/// what `char::escape_debug` escapes (bar the quotes and backslash it
+/// escapes as syntax), and the blanks it lets through.
+fn hidden(c: char) -> bool {
+    const PRINTABLE_BLANKS: [char; 2] = ['\u{2800}', '\u{FFFC}'];
+    let syntax = matches!(c, '"' | '\'' | '\\');
+    (!syntax && c.escape_debug().next() == Some('\\')) || PRINTABLE_BLANKS.contains(&c)
 }
 
-/// "28 Nov, 11:40", with the year only when it isn't this year (B7).
-pub fn when(local: chrono::NaiveDateTime, today: chrono::NaiveDate) -> String {
-    use chrono::Datelike as _;
-    if local.year() == today.year() {
-        local.format("%-d %b, %H:%M").to_string()
-    } else {
-        local.format("%-d %b %Y, %H:%M").to_string()
-    }
+/// A chosen file's name as the title shows it ([`inert`], capped).
+pub fn file_title(name: &str) -> String {
+    inert(name, NAME_CAP, false)
+}
+
+/// "28 Nov 2026, 16:35": a backup's time in the Restore dialog's title and
+/// the notification after a restore, always with its year (Pablo, SLI-71
+/// review).
+pub fn when(local: chrono::NaiveDateTime) -> String {
+    local.format("%-d %b %Y, %H:%M").to_string()
 }
 
 /// A checklist row as drawn.
@@ -325,6 +416,27 @@ pub fn details(assessment: &Assessment) -> Option<String> {
     }
 }
 
+/// A tooltip of plain words, drawn as the transactions table's
+/// suggested-transfer tip is.
+struct TextTip(&'static str);
+
+impl Render for TextTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .m(spacing::S2)
+            .px(spacing::S2_5)
+            .py(spacing::S2)
+            .bg(color::HOVER)
+            .border_1()
+            .border_color(color::TOOLTIP_BORDER)
+            .rounded(radius::SURFACE)
+            .shadow(vec![shadow::TOOLTIP.box_shadow()])
+            .text_role(typography::CAPTION)
+            .text_color(color::TEXT_SECONDARY)
+            .child(self.0)
+    }
+}
+
 impl RestoreTarget {
     /// A file chosen from disk ("Restore from a file…"): its time, when it
     /// has a backup's name.
@@ -364,6 +476,7 @@ impl RestoreDialog {
     }
 
     /// The Details text now shown, when the block is open.
+    #[cfg(any(test, feature = "dev-driver"))]
     fn details_text(&self) -> Option<String> {
         self.assessment().and_then(details)
     }
@@ -371,7 +484,7 @@ impl RestoreDialog {
     /// After a restore that didn't happen: a failed check is shown in its
     /// row, AI access in row ③, anything else in the `danger` caption.
     pub(super) fn refused(&mut self, failure: Failure, previous: Stage) {
-        self.refusal.details_open = false;
+        self.refusal.close();
         match failure {
             Failure::Check(assessment) => self.stage = Stage::Checked(assessment),
             Failure::AiAccessNotOff => {
@@ -386,7 +499,7 @@ impl RestoreDialog {
     }
 
     pub fn toggle_details(&mut self, cx: &mut Context<Self>) {
-        self.refusal.details_open = !self.refusal.details_open;
+        self.refusal.toggle(Instant::now(), cx.reduce_motion());
         cx.notify();
     }
 
@@ -427,7 +540,7 @@ impl RestoreDialog {
         self._since_read = None;
         self.error = None;
         self.refusal.ai_refused = false;
-        self.refusal.details_open = false;
+        self.refusal.close();
         self.stage = Stage::Checking;
         if let Some(store) = store {
             self.read_since(store.clone(), cx);
@@ -463,6 +576,35 @@ impl RestoreDialog {
         Some(column.into_any_element())
     }
 
+    /// The chevron: 12px, `text-muted`, `text-secondary` with the button's
+    /// hover; turning over 120ms on the entering curve from wherever it was
+    /// (`with_animation` honours `App::reduce_motion`).
+    fn chevron(&self) -> AnyElement {
+        let chevron = self.refusal.chevron;
+        let to = Chevron::target(self.refusal.details_open);
+        let from = chevron.from;
+        let glyph = Glyph::ChevronDown
+            .render_at(size::ICON_SM)
+            .text_color(color::TEXT_MUTED)
+            .group_hover(GROUP, |style| style.text_color(color::TEXT_SECONDARY));
+        if chevron.turned_at.is_none() || from == to {
+            return glyph
+                .with_transformation(Transformation::rotate(radians(to)))
+                .into_any_element();
+        }
+        glyph
+            .with_animation(
+                SharedString::from(format!("restore-details-chevron-{}", chevron.turns)),
+                Animation::new(CHEVRON_TURN).with_easing(ease_out),
+                move |glyph, delta| {
+                    glyph.with_transformation(Transformation::rotate(radians(
+                        from + (to - from) * delta,
+                    )))
+                },
+            )
+            .into_any_element()
+    }
+
     fn render_details(&self, text: String, cx: &mut Context<Self>) -> AnyElement {
         let open = self.refusal.details_open;
         let copied = text.clone();
@@ -473,8 +615,8 @@ impl RestoreDialog {
             .child(
                 div().flex().child(
                     Button::new("restore-details", DETAILS)
-                        .with_variant(ButtonVariant::Ghost)
-                        .icon(Glyph::ChevronDown)
+                        .with_variant(ButtonVariant::Disclosure)
+                        .leading(self.chevron())
                         .with_surface(color::FLOAT)
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_details(cx))),
                 ),
@@ -498,15 +640,27 @@ impl RestoreDialog {
                                 .child(text),
                         )
                         .child(
-                            div().absolute().top(spacing::S1).right(spacing::S1).child(
-                                IconButton::new("restore-details-copy", Glyph::Copy, COPY_DETAILS)
+                            div()
+                                .id("restore-details-copy-tip")
+                                .absolute()
+                                .top(spacing::S1)
+                                .right(spacing::S1)
+                                .tooltip(|_, cx| cx.new(|_| TextTip(COPY_DETAILS)).into())
+                                .child(
+                                    IconButton::new(
+                                        "restore-details-copy",
+                                        Glyph::Copy,
+                                        COPY_DETAILS,
+                                    )
                                     .with_size(IconButtonSize::Small)
-                                    .on_click(move |_, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            copied.clone(),
-                                        ))
-                                    }),
-                            ),
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copied.clone(),
+                                            ))
+                                        },
+                                    ),
+                                ),
                         ),
                 )
             })
@@ -604,6 +758,16 @@ impl RestoreDialog {
 mod tests {
     use super::*;
 
+    /// Every result fits its cap, then "…".
+    fn assert_fits(text: &str, cap: usize) {
+        let length = text.chars().count();
+        let ellipsis = text.ends_with('…');
+        assert!(
+            length <= cap + usize::from(ellipsis),
+            "{length} > {cap}: {text}"
+        );
+    }
+
     #[test]
     fn hostile_text_is_capped_and_its_control_characters_escaped() {
         assert_eq!(inert("qa_evil", NAME_CAP, true), "qa_evil");
@@ -613,23 +777,177 @@ mod tests {
         );
         assert_eq!(inert("near \"x\"", MESSAGE_CAP, false), "near \"x\"");
         assert_eq!(inert("a\nb\u{202E}", MESSAGE_CAP, false), "a b\\u{202e}");
+        // A zero-width space, in a name and in a message.
+        assert_eq!(inert("a\u{200B}b", NAME_CAP, true), "a\\u{200b}b");
+        assert_eq!(inert("a\u{200B}b", MESSAGE_CAP, false), "a\\u{200b}b");
         let long = "x".repeat(500);
         let capped = inert(&long, NAME_CAP, true);
         assert_eq!(capped.chars().count(), NAME_CAP + 1);
         assert!(capped.ends_with('…'));
+        // An over-long Integrity message ("first"), as SQLite words it.
+        let first = format!("row 1 missing from index {}", "i".repeat(5000));
+        let details = details(&Assessment::Integrity { count: 3, first }).unwrap();
+        let shown = details.strip_prefix("3 problems; the first: ").unwrap();
+        assert_fits(shown, MESSAGE_CAP);
+        assert!(shown.ends_with('…'), "{shown}");
+    }
+
+    /// Characters `char::escape_debug` escapes (and the two blanks it
+    /// doesn't) are written `\u{…}`; letters, accents and emoji aren't.
+    #[test]
+    fn invisible_characters_are_escaped_and_letters_kept() {
+        for c in [
+            '\u{2800}',
+            '\u{3164}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{FFFC}',
+            '\u{034F}',
+            '\u{FE0F}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{FE00}',
+            '\u{0600}',
+            '\u{06DD}',
+            '\u{070F}',
+            '\u{08E2}',
+            '\u{1BCA0}',
+            '\u{1D173}',
+            '\u{00A0}',
+            '\u{200D}',
+            '\u{0301}',
+        ] {
+            let shown = inert(&format!("a{c}b"), NAME_CAP, true);
+            assert_eq!(
+                shown,
+                format!("a\\u{{{:x}}}b", u32::from(c)),
+                "U+{:04X}",
+                u32::from(c)
+            );
+            assert_eq!(inert(&format!("a{c}b"), ERROR_CAP, false), shown);
+        }
+        // Precomposed accents and other scripts are letters, as they are.
+        let names = "café Straße Жук 中文 naïve 🧑";
+        assert_eq!(inert(names, NAME_CAP, true), names);
+        // A decomposed accent escapes its combining mark.
+        assert_eq!(inert("cafe\u{301}", NAME_CAP, true), "cafe\\u{301}");
+        // A flood of combining marks can't stack: each is an escape.
+        let zalgo = format!("a{}", "\u{301}".repeat(500));
+        let shown = inert(&zalgo, NAME_CAP, true);
+        assert!(shown.chars().all(|c| c.is_ascii() || c == '…'), "{shown}");
+        assert_fits(&shown, NAME_CAP);
+    }
+
+    /// The copy button copies what Details shows: `$` and `` ` `` can't
+    /// expand or run when it's pasted into a shell.
+    #[test]
+    fn shell_characters_are_inert_in_what_is_copied() {
+        let first = "row 1 missing from index x$(touch /tmp/david_pwn)`id`".to_owned();
+        let text = details(&Assessment::Integrity { count: 3, first }).unwrap();
+        assert_eq!(
+            text,
+            "3 problems; the first: row 1 missing from index x\\$(touch /tmp/david_pwn)\\`id\\`"
+        );
+        let unescaped = |text: &str| {
+            let chars: Vec<char> = text.chars().collect();
+            (0..chars.len())
+                .any(|i| matches!(chars[i], '$' | '`') && (i == 0 || chars[i - 1] != '\\'))
+        };
+        assert!(!unescaped(&text), "{text}");
+        let name = Assessment::Schema {
+            version: 24,
+            problem: backup::SchemaProblem::Extra,
+            object_type: "table".into(),
+            name: "x$(id>/tmp/pwn)`id`;rm -rf ~".into(),
+        };
+        let text = details(&name).unwrap();
+        assert!(!unescaped(&text), "{text}");
+        assert!(
+            text.contains("\"x\\$(id>/tmp/pwn)\\`id\\`;rm -rf ~\""),
+            "{text}"
+        );
+    }
+
+    /// The cap is on what's shown: escapes count, and none is cut in two.
+    #[test]
+    fn the_cap_counts_the_escaped_output() {
+        let bidi = "\u{202E}".repeat(64);
+        let shown = inert(&bidi, NAME_CAP, true);
+        assert_fits(&shown, NAME_CAP);
+        assert_eq!(shown, format!("{}…", "\\u{202e}".repeat(NAME_CAP / 8)));
+        let caption = inert(&"\u{202E}".repeat(300), ERROR_CAP, false);
+        assert_fits(&caption, ERROR_CAP);
+        assert!(
+            caption.trim_end_matches('…').ends_with("\\u{202e}"),
+            "{caption}"
+        );
+        let long = inert(&"N".repeat(5000), NAME_CAP, true);
+        assert_fits(&long, NAME_CAP);
+        assert_eq!(long.chars().count(), NAME_CAP + 1);
+        // Multibyte and a ZWJ right at the cap: whole characters, whole
+        // escapes.
+        let people = "\u{1F9D1}\u{200D}\u{1F4BB}".repeat(40);
+        let shown = inert(&people, NAME_CAP, true);
+        assert_fits(&shown, NAME_CAP);
+        let body = shown.trim_end_matches('…');
+        assert!(
+            body.ends_with('\u{1F9D1}')
+                || body.ends_with('\u{1F4BB}')
+                || body.ends_with("\\u{200d}"),
+            "{shown}"
+        );
+        let error = error_text(&std::io::Error::other("\u{202E}".repeat(300)));
+        assert_fits(&error, ERROR_CAP + 1);
     }
 
     #[test]
-    fn dates_name_the_year_only_when_it_isnt_this_one() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 28).unwrap();
+    fn dates_always_name_the_year() {
         let at = |year| {
             chrono::NaiveDate::from_ymd_opt(year, 11, 28)
                 .unwrap()
-                .and_hms_opt(11, 40, 0)
+                .and_hms_opt(16, 35, 0)
                 .unwrap()
         };
-        assert_eq!(when(at(2026), today), "28 Nov, 11:40");
-        assert_eq!(when(at(2025), today), "28 Nov 2025, 11:40");
+        assert_eq!(when(at(2026)), "28 Nov 2026, 16:35");
+        assert_eq!(when(at(2025)), "28 Nov 2025, 16:35");
+    }
+
+    /// A click mid-turn turns the chevron back from where it is, not from
+    /// the end; without motion it's at its end at once.
+    #[test]
+    fn the_chevron_turns_back_from_where_it_is() {
+        let mut chevron = Chevron::default();
+        let mut open = false;
+        let start = Instant::now();
+        assert_eq!(chevron.angle(open, start, false), CHEVRON_CLOSED);
+        chevron.turn(open, start, false);
+        open = true;
+        assert_eq!(chevron.angle(open, start, false), CHEVRON_CLOSED);
+        assert_eq!(
+            chevron.angle(open, start + CHEVRON_TURN, false),
+            CHEVRON_OPEN
+        );
+        let halfway = start + CHEVRON_TURN / 2;
+        let angle = chevron.angle(open, halfway, false);
+        assert!(CHEVRON_CLOSED < angle && angle < CHEVRON_OPEN, "{angle}");
+        chevron.turn(open, halfway, false);
+        open = false;
+        assert_eq!(
+            chevron.angle(open, halfway, false),
+            angle,
+            "from where it was"
+        );
+        assert_eq!(
+            chevron.angle(open, halfway + CHEVRON_TURN, false),
+            CHEVRON_CLOSED
+        );
+        chevron.turn(open, halfway, true);
+        open = true;
+        assert_eq!(
+            chevron.angle(open, halfway, true),
+            CHEVRON_OPEN,
+            "reduced motion"
+        );
     }
 
     #[test]
