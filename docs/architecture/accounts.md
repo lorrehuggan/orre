@@ -118,7 +118,9 @@ manual rows, exclusions, change batches, the pot mirror) are in that record and 
   bar after closing ("QA Loan closes on 29 Nov 2026", Undo), while the closing day is
   still to come; when that day comes the bar, if still open, turns into "QA Loan closed"
   without Undo. Later only `orre accounts reopen`. The bar and the Close dialog's body
-  always write the day with its year; the dialog says every kind leaves "from" it. There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
+  always write the day with its year; the dialog says every kind leaves "from" it, and
+  ends with the command to reopen it: `orre accounts reopen "<name>"`, or the ID when the
+  name can't be pasted safely in double quotes (`accounts::close::reopen_command`). There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
   column, and a CLOSES column for a closing day still to come.
 - **Deleting** (`account::delete`; `account::deletion` counts what goes) is for an
   account added by mistake: refused (`Undeletable(DeleteLock)`) while it has

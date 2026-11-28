@@ -28,8 +28,8 @@ pub enum AccountsCommand {
     List,
     /// Add an account.
     Add(AddAccountArgs),
-    /// Close an account: it leaves the accounts panel and net worth after
-    /// that day, keeping its history. Its open pots close with it; an asset
+    /// Close an account: from that day it leaves the Accounts panel and net
+    /// worth, but keeps its history. Its open pots close with it; an asset
     /// or liability gets a 0 valuation that day.
     Close(CloseAccountArgs),
     /// Reopen a closed account, with the pots that closed with it.
