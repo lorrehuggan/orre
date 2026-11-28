@@ -1178,7 +1178,7 @@ pub fn name_header(rules: &Rules) -> Option<HeaderText> {
             HeaderText {
                 title,
                 figure: Some((summary.matches.to_string(), false)),
-                caption: Some(format!("transactions show this name{last}")),
+                caption: Some(format!("{}{last}", name_matches_caption(summary.matches))),
             }
         }
         None => HeaderText {
@@ -1187,6 +1187,16 @@ pub fn name_header(rules: &Rules) -> Option<HeaderText> {
             caption: Some("new name, saved once both fields are filled in".to_owned()),
         },
     })
+}
+
+/// The caption under the name's match count: "transaction shows this name"
+/// or "transactions show this name".
+fn name_matches_caption(matches: usize) -> &'static str {
+    if matches == 1 {
+        "transaction shows this name"
+    } else {
+        "transactions show this name"
+    }
 }
 
 /// The name's footer date: "Added on " it.
@@ -1311,7 +1321,7 @@ fn name_sections(
             .gap(spacing::S2)
             .child(section_title_row("Bank text it catches", None));
         if caught.is_empty() {
-            catches = catches.child(fields::caption("No transaction shows this name yet."));
+            catches = catches.child(fields::caption("No transactions show this name yet."));
         } else {
             catches = catches.child(div().flex().flex_col().gap(spacing::S1).children(caught));
         }
@@ -1844,4 +1854,16 @@ fn new_category_sections(
             .into_any_element(),
     );
     sections
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_names_match_caption_agrees_with_its_count() {
+        assert_eq!(name_matches_caption(1), "transaction shows this name");
+        assert_eq!(name_matches_caption(3), "transactions show this name");
+        assert_eq!(name_matches_caption(0), "transactions show this name");
+    }
 }
