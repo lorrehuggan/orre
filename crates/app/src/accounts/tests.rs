@@ -886,7 +886,10 @@ fn closing_an_asset_hides_it_and_undo_reopens_it(cx: &mut TestAppContext) {
     let shown = describe(&shell, &accounts, cx);
     assert_eq!(field(dialog(&shown), "Sold on"), Some("12 Oct 2026"));
     let error = dialog(&shown).error.clone().expect("refused");
-    assert!(error.contains("2026-10-13"), "{error}");
+    assert_eq!(
+        error.as_str(),
+        "The earliest the account can close is 13 Oct 2026: it has values or transactions up to then.",
+    );
     assert_eq!(account::get(&scratch.db(), house).unwrap().closed_on, None);
 
     retype_date("close-account-date", "6 Nov 2026", cx);
