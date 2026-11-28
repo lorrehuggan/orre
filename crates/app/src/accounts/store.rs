@@ -102,6 +102,9 @@ impl AccountStore {
     ) -> Result<AccountsData, StoreError> {
         let db = self.open()?;
         let tree = account_tree(&db.reader()?, today)?;
+        // Every account, closed ones and pots included, as `orre accounts
+        // reopen` reads them: which names it can't tell apart.
+        let shared_names = super::data::shared_names(&account::list(&db)?);
         let mut details = BTreeMap::new();
         for node in tree.rows() {
             let id = node.account.id;
@@ -132,6 +135,7 @@ impl AccountStore {
             details,
             presets,
             today,
+            shared_names,
         })
     }
 
@@ -240,6 +244,64 @@ mod tests {
     fn the_bundled_presets_load() {
         let presets = bundled_presets();
         assert!(presets.iter().any(|preset| preset.id == "uk-monzo"));
+    }
+
+    /// SLI-77: the load sees every account's name, closed ones included,
+    /// so the Close dialog names an account by ID when another account
+    /// has its exact name, as `orre accounts reopen` would refuse it.
+    #[test]
+    fn a_name_shared_with_a_closed_account_is_reopened_by_id() {
+        use crate::accounts::close::CloseFacts;
+
+        let dir = TempDir::new().unwrap();
+        let store = AccountStore::new(dir.path().join("orre.db"));
+        let add = |name: &str| {
+            store
+                .create(
+                    &NewAccount::new(name, AccountKind::Savings, Currency::GBP),
+                    None,
+                )
+                .unwrap()
+        };
+        let open_isa = add("Joint ISA");
+        let closed_isa = add("Joint ISA");
+        let lower = add("joint isa");
+        let spaced = add("Joint ISA ");
+        let twin_a = add("Twin");
+        let twin_b = add("Twin");
+        let solo = add("Solo");
+        let on = NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
+        store.close(closed_isa, on).unwrap();
+
+        let data = store.load(Vec::new(), today()).unwrap();
+        assert!(!data.contains(closed_isa), "the panel doesn't list it");
+        assert_eq!(
+            data.shared_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["Joint ISA", "Twin"]
+        );
+        let command = |id| CloseFacts::of(&data, id).unwrap().reopen_command();
+        // Shared with a closed account, and with another open one: the ID.
+        assert_eq!(
+            CloseFacts::of(&data, open_isa)
+                .unwrap()
+                .body(NaiveDate::from_ymd_opt(2026, 11, 29)),
+            format!(
+                "Joint ISA leaves the Accounts panel and net worth from 29 Nov 2026. Its transactions, balances and imports stay, so earlier net worth doesn't change. To reopen it, run orre accounts reopen {open_isa} in a terminal."
+            )
+        );
+        assert_eq!(command(twin_a), format!("orre accounts reopen {twin_a}"));
+        assert_eq!(command(twin_b), format!("orre accounts reopen {twin_b}"));
+        // `reopen` compares exactly: another case isn't the same name.
+        assert_eq!(command(lower), "orre accounts reopen \"joint isa\"");
+        // Nor is a trailing space; that name gets the ID anyway, because
+        // the dialog shows it trimmed.
+        assert!(!data.shared_names.contains("Joint ISA "));
+        assert_eq!(command(spaced), format!("orre accounts reopen {spaced}"));
+        // A name no other account has: quoted.
+        assert_eq!(command(solo), "orre accounts reopen \"Solo\"");
     }
 
     #[test]

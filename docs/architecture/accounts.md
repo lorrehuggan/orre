@@ -120,7 +120,8 @@ manual rows, exclusions, change batches, the pot mirror) are in that record and 
   without Undo. Later only `orre accounts reopen`. The bar and the Close dialog's body
   always write the day with its year; the dialog says every kind leaves "from" it, and
   ends with the command to reopen it: `orre accounts reopen "<name>"`, or the ID when the
-  name can't be pasted safely in double quotes (`accounts::close::reopen_command`). There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
+  name can't be pasted safely in double quotes or another account, open or closed, has the
+  same name (`accounts::close::reopen_command`). There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
   column, and a CLOSES column for a closing day still to come.
 - **Deleting** (`account::delete`; `account::deletion` counts what goes) is for an
   account added by mistake: refused (`Undeletable(DeleteLock)`) while it has

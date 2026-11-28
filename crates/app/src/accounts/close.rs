@@ -50,6 +50,9 @@ pub struct CloseFacts {
     pub name: String,
     /// Its name as stored, which `orre accounts reopen` matches exactly.
     pub stored_name: String,
+    /// Whether another account, open or closed, has the same stored name,
+    /// so `orre accounts reopen` can't find it by name.
+    pub name_shared: bool,
     pub kind: AccountKind,
     /// Its latest balance or value, if it has one.
     pub balance: Option<Money>,
@@ -67,6 +70,7 @@ impl CloseFacts {
             id: account,
             name: super::name(&node.account.name),
             stored_name: node.account.name.clone(),
+            name_shared: data.shared_names.contains(&node.account.name),
             kind: node.account.kind,
             balance: node.latest.map(|latest| latest.balance),
             pots: node
@@ -136,7 +140,7 @@ impl CloseFacts {
     /// The command that reopens it, as the body's last sentence names it
     /// ([`reopen_command`]).
     pub fn reopen_command(&self) -> String {
-        reopen_command(&self.stored_name, self.id)
+        reopen_command(&self.stored_name, self.id, self.name_shared)
     }
 }
 
@@ -159,6 +163,8 @@ fn reopen_line(command: &str) -> String {
 ///
 /// The name is used only when every one of these holds:
 ///
+/// - No other account, open or closed, has the same stored name (`shared`
+///   is false): `reopen` would refuse it as meaning more than one account.
 /// - It's shown as stored ([`super::name`] changes nothing): no invisible
 ///   or bidi characters stripped, no spaces collapsed or trimmed, not cut.
 ///   `reopen` matches the stored name exactly.
@@ -173,14 +179,15 @@ fn reopen_line(command: &str) -> String {
 ///   doesn't start with `-` (it would read as an option).
 ///
 /// [`envelope::is_invisible`]: orre_core::envelope::is_invisible
-pub fn reopen_command(stored: &str, id: AccountId) -> String {
+pub fn reopen_command(stored: &str, id: AccountId, shared: bool) -> String {
     let unsafe_char = |c: char| {
         matches!(c, '"' | '$' | '`' | '\\' | '!' | '%')
             || c.is_control()
             || (c.is_whitespace() && c != ' ')
             || orre_core::envelope::is_invisible(c)
     };
-    let safe = !stored.is_empty()
+    let safe = !shared
+        && !stored.is_empty()
         && super::name(stored) == stored
         && !stored.chars().any(unsafe_char)
         && stored.trim().parse::<i64>().is_err()
@@ -415,6 +422,7 @@ mod tests {
             id: AccountId::new(7),
             name: "House".into(),
             stored_name: "House".into(),
+            name_shared: false,
             kind,
             balance: Some(Money::new(minor, Currency::GBP)),
             pots: pots.iter().map(|pot| (*pot).to_owned()).collect(),
@@ -577,7 +585,7 @@ mod tests {
             "Savings 2",
             "Pot-1",
         ] {
-            assert_eq!(reopen_command(safe, id), quoted(safe), "{safe:?}");
+            assert_eq!(reopen_command(safe, id, false), quoted(safe), "{safe:?}");
         }
         for unsafe_name in [
             // Shell syntax inside double quotes.
@@ -610,16 +618,38 @@ mod tests {
             "Double  space",
         ] {
             assert_eq!(
-                reopen_command(unsafe_name, id),
+                reopen_command(unsafe_name, id, false),
                 "orre accounts reopen 12",
                 "{unsafe_name:?}"
             );
         }
         // A name past what the dialog shows is cut there: the ID.
         let long = "a".repeat(crate::inbox::text::NAME_SHOWN + 1);
-        assert_eq!(reopen_command(&long, id), "orre accounts reopen 12");
+        assert_eq!(reopen_command(&long, id, false), "orre accounts reopen 12");
         let longest = "a".repeat(crate::inbox::text::NAME_SHOWN);
-        assert_eq!(reopen_command(&longest, id), quoted(&longest));
+        assert_eq!(reopen_command(&longest, id, false), quoted(&longest));
+    }
+
+    /// A name another account has too, open or closed, can't find the
+    /// account: the ID. `reopen` compares names exactly, so a name that
+    /// differs only in case or a trailing space isn't shared.
+    #[test]
+    fn a_shared_name_is_reopened_by_its_id() {
+        let mut isa = named(facts(AccountKind::Savings, 120_000, &[]), "Joint ISA");
+        isa.name_shared = true;
+        assert_eq!(
+            isa.body(Some(day(11, 29))),
+            "Joint ISA leaves the Accounts panel and net worth from 29 Nov 2026. Its balance of £1,200.00 goes with it. Its transactions, balances and imports stay, so earlier net worth doesn't change. To reopen it, run orre accounts reopen 7 in a terminal."
+        );
+        let id = AccountId::new(7);
+        assert_eq!(
+            reopen_command("Joint ISA", id, true),
+            "orre accounts reopen 7"
+        );
+        assert_eq!(
+            reopen_command("Joint ISA", id, false),
+            "orre accounts reopen \"Joint ISA\""
+        );
     }
 
     /// The mono run is exactly the command, found from the end, so a name

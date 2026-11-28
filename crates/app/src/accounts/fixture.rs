@@ -170,6 +170,7 @@ pub fn accounts() -> AccountsData {
             name: "Monzo".to_owned(),
         }],
         today: today(),
+        shared_names: Default::default(),
     }
 }
 
