@@ -126,7 +126,7 @@ fn valuations_are_for_asset_and_liability_accounts_only() {
     account::add_balance(&mut db, mortgage, &value(day(10, 1), -21_264_000)).unwrap();
 
     // Net worth: the latest value of each, the liability subtracting.
-    let tree = account_tree(&db.reader().unwrap()).unwrap();
+    let tree = account_tree(&db.reader().unwrap(), day(11, 28)).unwrap();
     assert_eq!(
         tree.net_worth
             .iter()
@@ -170,9 +170,14 @@ fn a_valuation_account_closes_after_its_last_value_at_zero_and_reopens() {
     ));
     assert_eq!(list_closed(&db).unwrap()[0].id, house);
 
-    // It leaves the panel; earlier months keep its value.
+    // It leaves the panel on its closing day; earlier months keep its value.
     let reader = db.reader().unwrap();
-    assert!(account_tree(&reader).unwrap().accounts.is_empty());
+    assert!(
+        account_tree(&reader, day(11, 6))
+            .unwrap()
+            .accounts
+            .is_empty()
+    );
     let months = net_worth_history(
         &reader,
         Period::new(2026, 10).unwrap(),

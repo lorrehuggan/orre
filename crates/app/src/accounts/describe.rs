@@ -95,6 +95,9 @@ pub struct AccountRow {
     pub overdrawn: bool,
     /// A pot, under its account.
     pub nested: bool,
+    /// What follows its name while it closes on a later day: "· closes 29
+    /// Nov".
+    pub closes: Option<String>,
     /// The `danger` dot: its balance check failed.
     pub flagged: bool,
     pub selected: bool,
@@ -134,7 +137,13 @@ fn flagged(node: &AccountNode) -> bool {
     node.status == Status::Mismatch
 }
 
-fn account_row(node: &AccountNode, nested: bool, selected: bool, ring: bool) -> AccountRow {
+fn account_row(
+    node: &AccountNode,
+    today: chrono::NaiveDate,
+    nested: bool,
+    selected: bool,
+    ring: bool,
+) -> AccountRow {
     let (balance, overdrawn) =
         panel::latest(node).unwrap_or_else(|| (panel::NO_BALANCE.to_owned(), false));
     AccountRow {
@@ -142,6 +151,7 @@ fn account_row(node: &AccountNode, nested: bool, selected: bool, ring: bool) -> 
         balance,
         overdrawn,
         nested,
+        closes: panel::closes(node, today),
         flagged: flagged(node),
         selected,
         cursor: selected && ring,
@@ -227,7 +237,10 @@ fn describe_inspector(
         );
     }
 
-    let mut footer = Section::default().action(Action::button(inspector::CLOSE, true));
+    let mut footer = Section::default();
+    if node.closes_on().is_none() {
+        footer = footer.action(Action::button(inspector::CLOSE, true));
+    }
     if detail.deletion.refused.is_none() {
         footer = footer.action(Action::button(inspector::DELETE, true));
     }
@@ -305,7 +318,13 @@ impl Accounts {
         let selected = self.selected();
         let ring = self.panel_ring.get();
         let row = |node: &AccountNode, nested: bool| {
-            account_row(node, nested, selected == Some(node.account.id), ring)
+            account_row(
+                node,
+                self.data().today,
+                nested,
+                selected == Some(node.account.id),
+                ring,
+            )
         };
         let (kept, valued) = panel::sections(data);
         let accounts = PanelSection {
@@ -351,10 +370,10 @@ impl Accounts {
                 }),
                 (None, Some(closed)) => {
                     let message = self.closed_error().unwrap_or(&closed.message);
-                    Some((
-                        message.to_string(),
-                        vec![Action::button(crate::ui::undo_bar::UNDO, true)],
-                    ))
+                    let undo = closed
+                        .undoable
+                        .then(|| Action::button(crate::ui::undo_bar::UNDO, true));
+                    Some((message.to_string(), undo.into_iter().collect()))
                 }
                 (None, None) => None,
             },

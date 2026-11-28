@@ -98,6 +98,14 @@ fn parse_currency(code: &str) -> Result<Currency, String> {
 
 /// `orre accounts`: every account, in the order they were added.
 pub fn list(db: &Database, out: &mut dyn Write) -> anyhow::Result<()> {
+    let today = orre_core::schedule::local_today().context("couldn't read today's date")?;
+    list_on(db, today, out)
+}
+
+/// [`list`] as of `today`: CLOSED holds a closing day that has come (today
+/// or earlier); one still to come goes under CLOSES, a column shown only
+/// when some account has one (SLI-77: the account is open until then).
+pub(super) fn list_on(db: &Database, today: NaiveDate, out: &mut dyn Write) -> anyhow::Result<()> {
     let accounts = account::list(db)?;
     if accounts.is_empty() {
         writeln!(
@@ -107,7 +115,8 @@ pub fn list(db: &Database, out: &mut dyn Write) -> anyhow::Result<()> {
         )?;
         return Ok(());
     }
-    let rows: Vec<Vec<String>> = accounts
+    let day = |date: Option<NaiveDate>| date.map_or_else(|| "-".into(), |date| date.to_string());
+    let mut rows: Vec<Vec<String>> = accounts
         .iter()
         .map(|account| {
             vec![
@@ -123,27 +132,33 @@ pub fn list(db: &Database, out: &mut dyn Write) -> anyhow::Result<()> {
                 account
                     .reconciled_through
                     .map_or_else(|| "-".into(), |date| date.to_string()),
-                account
-                    .closed_on
-                    .map_or_else(|| "-".into(), |date| date.to_string()),
+                day(account.closed_on.filter(|&closed| closed <= today)),
+                day(account.closed_on.filter(|&closed| closed > today)),
             ]
         })
         .collect();
-    write_table(
-        out,
-        &[
-            "ID",
-            "NAME",
-            "KIND",
-            "CURRENCY",
-            "INSTITUTION",
-            "PARENT",
-            "PRESET",
-            "LOCKED THROUGH",
-            "CLOSED",
-        ],
-        &rows,
-    )?;
+    let mut headers = vec![
+        "ID",
+        "NAME",
+        "KIND",
+        "CURRENCY",
+        "INSTITUTION",
+        "PARENT",
+        "PRESET",
+        "LOCKED THROUGH",
+        "CLOSED",
+        "CLOSES",
+    ];
+    let closing = accounts
+        .iter()
+        .any(|account| account.closed_on.is_some_and(|closed| closed > today));
+    if !closing {
+        headers.pop();
+        for row in &mut rows {
+            row.pop();
+        }
+    }
+    write_table(out, &headers, &rows)?;
     Ok(())
 }
 

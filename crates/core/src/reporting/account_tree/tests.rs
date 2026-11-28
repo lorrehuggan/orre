@@ -4,6 +4,11 @@ use crate::money::Currency;
 use super::super::test_ledger::TestLedger;
 use super::*;
 
+/// The day the tests read the tree on: after every row they write.
+fn today() -> NaiveDate {
+    crate::reporting::test_ledger::date("2026-11-28")
+}
+
 /// `(name, balance or None, flagged, overdrawn)` per row, in panel order.
 fn rows(tree: &AccountTree) -> Vec<(String, Option<i64>, bool, bool)> {
     tree.rows()
@@ -79,7 +84,7 @@ fn lists_pots_under_their_parent_with_balances_and_net_worth() {
         .unwrap();
     let _ = old_pot;
 
-    let tree = account_tree(&ledger.reader()).unwrap();
+    let tree = account_tree(&ledger.reader(), today()).unwrap();
     assert_eq!(
         rows(&tree),
         [
@@ -121,7 +126,7 @@ fn a_failed_balance_check_flags_the_account() {
     // Should be 9,000: £5 off.
     ledger.balance(current, "2026-11-03", 8_500);
 
-    let tree = account_tree(&ledger.reader()).unwrap();
+    let tree = account_tree(&ledger.reader(), today()).unwrap();
     assert_eq!(
         rows(&tree),
         [row("Current account", Some(8_500), true, false)]
@@ -131,7 +136,60 @@ fn a_failed_balance_check_flags_the_account() {
 #[test]
 fn no_accounts_is_an_empty_tree() {
     let ledger = TestLedger::new();
-    let tree = account_tree(&ledger.reader()).unwrap();
+    let tree = account_tree(&ledger.reader(), today()).unwrap();
+    assert!(tree.accounts.is_empty());
+    assert!(tree.net_worth.is_empty());
+}
+
+/// SLI-77: an account closing on a day still to come stays in the tree and
+/// in net worth, at its balance as of today (the £0 valuation closing wrote
+/// for that day doesn't count yet), and leaves on the day itself.
+#[test]
+fn an_account_closing_later_counts_until_its_closing_day() {
+    use crate::reporting::test_ledger::date;
+
+    let mut ledger = TestLedger::new();
+    let loan = ledger.valuation_account("QA Loan", AccountKind::Liability, Currency::GBP);
+    ledger.valuation(loan, "2026-11-20", -500_000);
+    let current = ledger.account("Current account", Currency::GBP);
+    ledger.balance(current, "2026-11-01", 100_000);
+    let pot = ledger.pot(current, "Holiday");
+    ledger.balance(pot, "2026-11-01", 2_000);
+    crate::account::close::close(&mut ledger.db, loan, date("2026-11-29")).unwrap();
+    crate::account::close::close(&mut ledger.db, current, date("2026-11-30")).unwrap();
+
+    let tree = account_tree(&ledger.reader(), date("2026-11-28")).unwrap();
+    assert_eq!(
+        rows(&tree),
+        [
+            row("QA Loan", Some(-500_000), false, false),
+            row("Current account", Some(100_000), false, false),
+            row("Holiday", Some(2_000), false, false),
+        ]
+    );
+    assert_eq!(
+        tree.rows().map(AccountNode::closes_on).collect::<Vec<_>>(),
+        [
+            Some(date("2026-11-29")),
+            Some(date("2026-11-30")),
+            Some(date("2026-11-30")),
+        ]
+    );
+    assert_eq!(totals(&tree), [("GBP".to_owned(), 102_000 - 500_000)]);
+
+    // On its closing day the loan has gone, and net worth rises by it.
+    let tree = account_tree(&ledger.reader(), date("2026-11-29")).unwrap();
+    assert_eq!(
+        rows(&tree),
+        [
+            row("Current account", Some(100_000), false, false),
+            row("Holiday", Some(2_000), false, false),
+        ]
+    );
+    assert_eq!(totals(&tree), [("GBP".to_owned(), 102_000)]);
+
+    // After every closing day, nothing is left.
+    let tree = account_tree(&ledger.reader(), date("2026-12-01")).unwrap();
     assert!(tree.accounts.is_empty());
     assert!(tree.net_worth.is_empty());
 }

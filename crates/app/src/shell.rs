@@ -856,12 +856,17 @@ impl ShellView {
     }
 
     /// Sets the time, redrawing only when the status bar could change: on
-    /// a new minute.
+    /// a new minute. Each new minute also tells the accounts today's date,
+    /// so on a new local day they read again and an account whose closing
+    /// day has come leaves the panel (SLI-77).
     fn set_now(&mut self, now: DateTime<Utc>, cx: &mut Context<Self>) {
         let minute = |time: DateTime<Utc>| time.timestamp().div_euclid(60);
         let changed = minute(now) != minute(self.now);
         self.now = now;
         if changed {
+            let today = crate::today();
+            self.accounts
+                .update(cx, |accounts, cx| accounts.follow_day(today, cx));
             cx.notify();
         }
     }

@@ -85,8 +85,10 @@ change would be refused, the preview shows none (point 4).
   `net_worth_history` still lists such an account, flagged `unanchored`, adding nothing
   (`AccountWorth::is_counted`) (decision record "one net worth rule").
 - A liability always subtracts. `net_worth_history` leaves a closed account out of every
-  month that ends after its `closed_on`; `account_tree` lists open accounts only, each at
-  its latest balance, on its own last active day.
+  month that ends after its `closed_on`; `account_tree` is as of the `today` it's given and
+  lists the accounts open on it, each at its latest balance, on its own last active day. An
+  account closing on a later day is still open there, at its balance as of today, so the
+  £0 valuation for its closing day doesn't count yet (SLI-77).
 
 ### Budgets
 

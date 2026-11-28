@@ -1325,6 +1325,7 @@ fn valued_snapshots(cx: &mut HeadlessAppContext, out: &Path) -> Result<()> {
                 fixture = fixture.with_closed(orre_app::accounts::Closed {
                     account: HOUSE,
                     message: "House closed".into(),
+                    undoable: false,
                 });
             }
             let accounts = cx.new(|_| fixture);

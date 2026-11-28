@@ -115,7 +115,7 @@ fn groups_for(node: &AccountNode, deletion: Deletion) -> Vec<MenuGroup> {
                     option(item::INSPECT, "Edit in the inspector"),
                 ],
             ),
-            lifecycle(deletion),
+            lifecycle(node, deletion),
         ],
         AccountKind::Current
         | AccountKind::Savings
@@ -127,18 +127,24 @@ fn groups_for(node: &AccountNode, deletion: Deletion) -> Vec<MenuGroup> {
             }
             first.push(option(item::ADD_BALANCE, "Add balance…"));
             first.push(option(item::INSPECT, "Edit in the inspector"));
-            vec![MenuGroup::new(None, first), lifecycle(deletion)]
+            vec![MenuGroup::new(None, first), lifecycle(node, deletion)]
         }
     }
 }
 
 /// Close account… and Delete account…, which says why when it can't go.
-fn lifecycle(deletion: Deletion) -> MenuGroup {
+/// An account closing on a later day has no Close account… (SLI-77).
+fn lifecycle(node: &AccountNode, deletion: Deletion) -> MenuGroup {
     let mut delete = option(item::DELETE, "Delete account…");
     if let Some(lock) = deletion.refused {
         delete = delete.disabled(true).hint(capital(lock.reason()));
     }
-    MenuGroup::new(None, vec![option(item::CLOSE, "Close account…"), delete])
+    let mut items = Vec::new();
+    if node.closes_on().is_none() {
+        items.push(option(item::CLOSE, "Close account…"));
+    }
+    items.push(delete);
+    MenuGroup::new(None, items)
 }
 
 /// The groups for a category group holding `rows` transactions.

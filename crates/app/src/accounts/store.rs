@@ -26,7 +26,6 @@ use orre_core::id::{AccountId, BalanceId};
 use orre_core::import::{self, BatchStatus};
 use orre_core::money::Money;
 use orre_core::reporting::account_tree::account_tree;
-use orre_core::schedule;
 use orre_import::preset::Presets;
 
 use super::data::{AccountDetail, AccountsData, PresetChoice};
@@ -93,10 +92,16 @@ impl AccountStore {
         Ok(gate::open(&self.database, Database::open)?)
     }
 
-    /// Every open account with what the panel and inspector show.
-    pub fn load(&self, presets: Vec<PresetChoice>) -> Result<AccountsData, StoreError> {
+    /// Every account open on `today` (the local date: an account closing
+    /// on a later day is still open) with what the panel and inspector
+    /// show.
+    pub fn load(
+        &self,
+        presets: Vec<PresetChoice>,
+        today: NaiveDate,
+    ) -> Result<AccountsData, StoreError> {
         let db = self.open()?;
-        let tree = account_tree(&db.reader()?)?;
+        let tree = account_tree(&db.reader()?, today)?;
         let mut details = BTreeMap::new();
         for node in tree.rows() {
             let id = node.account.id;
@@ -111,7 +116,12 @@ impl AccountStore {
                     usage: account::usage(&db, id)?,
                     balances: account::entered_balances(&db, id)?,
                     imports,
-                    close_from: account::close::closing(&db, id)?.earliest,
+                    // One closing on a later day is listed too, and can't
+                    // close again.
+                    close_from: match node.closes_on() {
+                        Some(_) => None,
+                        None => account::close::closing(&db, id)?.earliest,
+                    },
                     deletion: account::close::deletion(&db, id)?,
                     cash_expected: None,
                 },
@@ -121,7 +131,7 @@ impl AccountStore {
             tree,
             details,
             presets,
-            today: schedule::local_today()?,
+            today,
         })
     }
 
@@ -222,6 +232,10 @@ mod tests {
 
     use super::*;
 
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 11, 28).unwrap()
+    }
+
     #[test]
     fn the_bundled_presets_load() {
         let presets = bundled_presets();
@@ -243,7 +257,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let data = store.load(Vec::new()).unwrap();
+        let data = store.load(Vec::new(), today()).unwrap();
         let detail = data.detail(house).unwrap();
         assert_eq!(
             detail.close_from,
@@ -255,18 +269,30 @@ mod tests {
 
         let on = NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
         assert_eq!(store.close(house, on).unwrap(), [house]);
-        assert!(!store.load(Vec::new()).unwrap().contains(house));
+        assert!(!store.load(Vec::new(), today()).unwrap().contains(house));
+        // As of a day before it closed, it's still there, closing, and
+        // can't close again (SLI-77).
+        let before = store.load(Vec::new(), on.pred_opt().unwrap()).unwrap();
+        assert_eq!(before.node(house).unwrap().closes_on(), Some(on));
+        assert_eq!(before.detail(house).unwrap().close_from, None);
         assert_eq!(store.reopen(house).unwrap(), [house]);
-        assert!(store.load(Vec::new()).unwrap().contains(house));
+        assert!(store.load(Vec::new(), today()).unwrap().contains(house));
         assert_eq!(store.delete(house).unwrap(), 1);
-        assert!(!store.load(Vec::new()).unwrap().contains(house));
+        assert!(!store.load(Vec::new(), today()).unwrap().contains(house));
     }
 
     #[test]
     fn creates_edits_and_reads_back_accounts() {
         let dir = TempDir::new().unwrap();
         let store = AccountStore::new(dir.path().join("orre.db"));
-        assert!(store.load(Vec::new()).unwrap().tree.accounts.is_empty());
+        assert!(
+            store
+                .load(Vec::new(), today())
+                .unwrap()
+                .tree
+                .accounts
+                .is_empty()
+        );
 
         let mut new = NewAccount::new("Current account", AccountKind::Current, Currency::GBP);
         new.preset = Some("uk-monzo".into());
@@ -278,7 +304,7 @@ mod tests {
         };
         let id = store.create(&new, Some(&balance)).unwrap();
 
-        let data = store.load(bundled_presets()).unwrap();
+        let data = store.load(bundled_presets(), today()).unwrap();
         let node = data.node(id).unwrap();
         assert_eq!(node.latest.unwrap().balance.minor(), 128_410);
         assert_eq!(data.preset_name("uk-monzo"), "Monzo");
@@ -289,7 +315,7 @@ mod tests {
         store.update(id, &edit).unwrap();
         assert_eq!(
             store
-                .load(Vec::new())
+                .load(Vec::new(), today())
                 .unwrap()
                 .node(id)
                 .unwrap()

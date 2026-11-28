@@ -109,12 +109,15 @@ manual rows, exclusions, change batches, the pot mirror) are in that record and 
   `closed_on`, and transfer detection skips rows dated after it. An import into a closed
   account is still allowed, and a closed pot still takes mirrored rows ("Decision record:
   asset and liability accounts, closing and deleting (built)", point 7, left open). A
-  closed account leaves the panel and every month-end after `closed_on`.
+  closed account leaves every month-end after `closed_on`, and the panel (which is as of
+  today) on `closed_on` itself: until then it stays, counted at its balance as of today,
+  with "· closes 29 Nov" after its name; the app reads again on a new local day (SLI-77).
 - **Reopening** (`account::reopen`) clears `closed_on` on the account and on the pots
   closed the same day, and deletes the £0 valuation on the closing day. A pot whose
   parent is closed can't reopen alone (`ParentClosed`). The app offers it on the undo
-  bar after closing; later only `orre accounts reopen`. There is no panel UI for
-  closed accounts; `orre accounts list` has a CLOSED column.
+  bar after closing, while the closing day is still to come; later only `orre accounts
+  reopen`. There is no panel UI for closed accounts; `orre accounts list` has a CLOSED
+  column, and a CLOSES column for a closing day still to come.
 - **Deleting** (`account::delete`; `account::deletion` counts what goes) is for an
   account added by mistake: refused (`Undeletable(DeleteLock)`) while it has
   transactions, imports (an undone batch counts), pots, rules or schedules, or a lock.

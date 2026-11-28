@@ -99,6 +99,9 @@ pub struct ListRow {
     /// Words after the label at regular weight in `text-muted`: "Orre
     /// from your edits".
     label_suffix: Option<SharedString>,
+    /// Words after the label, like [`ListRow::label_suffix`], that stay
+    /// whole while the label truncates: "· closes 29 Nov".
+    label_tail: Option<SharedString>,
     trailing: Option<SharedString>,
     /// The trailing value is words ("No balance"), set in UI type.
     trailing_words: bool,
@@ -122,6 +125,7 @@ impl ListRow {
             label: label.into(),
             leading: None,
             label_suffix: None,
+            label_tail: None,
             trailing: None,
             trailing_words: false,
             trailing_tone: TrailingTone::Muted,
@@ -168,6 +172,14 @@ impl ListRow {
     /// ("Orre" + "from your edits").
     pub fn label_suffix(mut self, words: impl Into<SharedString>) -> Self {
         self.label_suffix = Some(words.into());
+        self
+    }
+
+    /// Adds `words` after the label at regular weight in `text-muted`,
+    /// kept whole: the label truncates first, and the trailing value never
+    /// does.
+    pub fn label_tail(mut self, words: impl Into<SharedString>) -> Self {
+        self.label_tail = Some(words.into());
         self
     }
 
@@ -409,14 +421,33 @@ impl RenderOnce for ListRow {
             })
             .child(
                 div()
+                    .flex()
                     .flex_1()
                     .min_w_0()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_role(LABEL)
-                    .text_color(colors.label)
-                    .map(brighten(colors.follows_hover))
-                    .child(label_text(&self.label, self.label_suffix.as_ref())),
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_role(LABEL)
+                            .text_color(colors.label)
+                            .map(brighten(colors.follows_hover))
+                            .child(label_text(&self.label, self.label_suffix.as_ref())),
+                    )
+                    .when_some(self.label_tail, |this, tail| {
+                        // A space before it, as `label_text` sets a suffix.
+                        this.child(
+                            div()
+                                .flex_none()
+                                .whitespace_nowrap()
+                                .text_role(LABEL)
+                                .font_weight(weight::REGULAR)
+                                .text_color(color::TEXT_MUTED)
+                                .child(SharedString::from(format!("\u{a0}{tail}"))),
+                        )
+                    }),
             )
             .when(self.flagged, |this| {
                 let dot = div()

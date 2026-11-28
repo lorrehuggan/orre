@@ -13,7 +13,8 @@
 //! - **Pots** with their balances and total, and **Imports** (file, rows,
 //!   date), each only when there are any.
 //!
-//! - **Footer** (M3.17): outline "Close account…" on every kind, and the
+//! - **Footer** (M3.17): outline "Close account…" on every kind (not on
+//!   one already closing on a later day, SLI-77), and the
 //!   small danger outline "Delete account…" beside it when core lets the
 //!   account go (decided with the user, 2026-11-14); an asset or liability
 //!   adds D6.9's caption.
@@ -913,11 +914,15 @@ impl AccountInspector {
                 div()
                     .flex()
                     .gap(spacing::S2)
-                    .child(
-                        Button::new("close-account", CLOSE).on_click(move |_, _, cx| {
-                            close.update(cx, |accounts, cx| accounts.request_close(id, cx))
-                        }),
-                    )
+                    // An account closing on a later day can't close again
+                    // (SLI-77).
+                    .when(node.closes_on().is_none(), |this| {
+                        this.child(
+                            Button::new("close-account", CLOSE).on_click(move |_, _, cx| {
+                                close.update(cx, |accounts, cx| accounts.request_close(id, cx))
+                            }),
+                        )
+                    })
                     .when(deletion.refused.is_none(), |this| {
                         this.child(
                             Button::new("delete-account", DELETE)

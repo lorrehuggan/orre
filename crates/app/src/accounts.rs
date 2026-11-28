@@ -15,9 +15,15 @@
 //! - [`context_menu`]: the right-click menus on the panel's rows (M3.P10).
 //! - [`close`] and [`delete`]: the Close and Delete account dialogs (M3.17).
 //!
-//! After closing, the undo bar says so and Undo reopens the account
-//! ([`notice_layer`]); a closed account is reopened later with `orre
-//! accounts reopen` (decided with the user, 2026-11-14).
+//! After closing, the undo bar says so ([`notice_layer`]). The panel is as
+//! of today (SLI-77): an account closing on a later day stays in it, and in
+//! net worth, with "· closes 29 Nov" after its name, until that day; the
+//! bar says "QA Loan closes on 29 Nov" and its Undo reopens the account.
+//! Closed today or earlier, the account leaves at once and the bar says
+//! "QA Loan closed", with no Undo. A closed account is reopened later with
+//! `orre accounts reopen` (decided with the user, 2026-11-14). The shell's
+//! clock tick calls [`Accounts::follow_day`], so on the closing day, from
+//! local midnight, the accounts read again and the account leaves.
 //!
 //! [`Accounts`] holds what they show and which account is selected, and
 //! makes every change through [`store::AccountStore`], which opens the
@@ -199,8 +205,28 @@ pub struct DialogClosed;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Closed {
     pub account: AccountId,
-    /// "House closed".
+    /// "House closes on 29 Nov", or "House closed" for today or earlier.
     pub message: SharedString,
+    /// Whether the bar offers Undo: only while the closing day is still to
+    /// come.
+    pub undoable: bool,
+}
+
+impl Closed {
+    /// What the bar says after `name` is closed on `on`, read on `today`.
+    pub fn new(account: AccountId, name: &str, on: NaiveDate, today: NaiveDate) -> Self {
+        let undoable = on > today;
+        let message = if undoable {
+            format!("{name} closes on {}", crate::format::list_date(on, today))
+        } else {
+            format!("{name} closed")
+        };
+        Self {
+            account,
+            message: message.into(),
+            undoable,
+        }
+    }
 }
 
 /// A balance just removed: the undo bar's message, and what Undo adds back.
@@ -546,6 +572,11 @@ impl Accounts {
     /// this one. When it lands, a selected account that has gone (closed or
     /// deleted) is let go, and the views filtering by it are told.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_on(today(), cx);
+    }
+
+    /// [`Accounts::reload`] as of `today`.
+    fn reload_on(&mut self, today: NaiveDate, cx: &mut Context<Self>) {
         let Source::Database(store) = &self.source else {
             cx.notify();
             return;
@@ -553,7 +584,7 @@ impl Accounts {
         let store = store.clone();
         self.loading = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { store.load(store.presets()) })
+                .background_spawn(async move { store.load(store.presets(), today) })
                 .await
                 .map_err(|error| SharedString::from(error.to_string()));
             this.update(cx, |this, cx| {
@@ -567,6 +598,20 @@ impl Accounts {
             })
             .ok();
         }));
+    }
+
+    /// The shell's clock tick: when `today` isn't the day the accounts were
+    /// read on, reads them again, so an account whose closing day has come
+    /// leaves the panel and net worth (from local midnight, within the
+    /// tick). Sample data keeps its day.
+    pub fn follow_day(&mut self, today: NaiveDate, cx: &mut Context<Self>) {
+        if self.loaded
+            && self.loading.is_none()
+            && today != self.data.today
+            && matches!(self.source, Source::Database(_))
+        {
+            self.reload_on(today, cx);
+        }
     }
 
     /// Starts the first read, if it hasn't been asked for.
@@ -602,7 +647,7 @@ impl Accounts {
             return;
         };
         let result = store
-            .load(store.presets())
+            .load(store.presets(), today())
             .map_err(|error| SharedString::from(error.to_string()));
         self.take(result);
         if self.selected.is_some_and(|id| !self.data.contains(id)) {
@@ -695,10 +740,7 @@ impl Accounts {
         self.store()?
             .close(account, on)
             .map_err(|error| SharedString::from(error.to_string()))?;
-        self.closed = Some(Closed {
-            account,
-            message: format!("{name} closed").into(),
-        });
+        self.closed = Some(Closed::new(account, &name, on, today()));
         self.closed_error = None;
         self.removed = None;
         self.removed_error = None;
@@ -708,7 +750,7 @@ impl Accounts {
 
     /// Undo on the bar: reopens the account just closed and selects it.
     pub fn undo_close(&mut self, cx: &mut Context<Self>) {
-        let Some(closed) = self.closed.clone() else {
+        let Some(closed) = self.closed.clone().filter(|closed| closed.undoable) else {
             return;
         };
         let reopened = self.store().and_then(|store| {
@@ -909,8 +951,9 @@ impl Accounts {
 }
 
 /// The undo bar after closing an account, centred over the foot of the
-/// window's body like the import notification: "House closed" and Undo,
-/// which reopens it. `None` when no account was just closed.
+/// window's body like the import notification: "House closes on 29 Nov"
+/// and Undo, which reopens it, or "House closed" alone for a day that has
+/// come. `None` when no account was just closed.
 pub fn notice_layer(
     accounts: &gpui_kit::Entity<Accounts>,
     cx: &gpui_kit::App,
@@ -932,7 +975,17 @@ pub fn notice_layer(
             .unwrap_or_else(|| closed.message.clone()),
         (None, None) => return None,
     };
+    let undoable =
+        state.removed().is_some() || state.closed().is_some_and(|closed| closed.undoable);
     let (undo, dismiss) = (accounts.downgrade(), accounts.downgrade());
+    let bar = UndoBar::new(message);
+    let bar = if undoable {
+        bar.on_undo(move |_, _, cx| {
+            let _ = undo.update(cx, |accounts, cx| accounts.undo_notice(cx));
+        })
+    } else {
+        bar.without_undo()
+    };
     Some(
         div()
             .absolute()
@@ -941,15 +994,9 @@ pub fn notice_layer(
             .bottom(spacing::S6)
             .flex()
             .justify_center()
-            .child(
-                UndoBar::new(message)
-                    .on_undo(move |_, _, cx| {
-                        let _ = undo.update(cx, |accounts, cx| accounts.undo_notice(cx));
-                    })
-                    .on_dismiss(move |_, _, cx| {
-                        let _ = dismiss.update(cx, |accounts, cx| accounts.dismiss_notice(cx));
-                    }),
-            )
+            .child(bar.on_dismiss(move |_, _, cx| {
+                let _ = dismiss.update(cx, |accounts, cx| accounts.dismiss_notice(cx));
+            }))
             .into_any_element(),
     )
 }
